@@ -19,6 +19,17 @@ public class CacheTest {
     private static String VALUE = "value";
     private static ExecutorService refreshBackend = Executors.newFixedThreadPool(3);
 
+
+    @Test
+    public void add() {
+
+        cache = CacheBuilder.newBuilder().setRefreshBackend(refreshBackend).build();
+        cache.add("key", "first", Long.MAX_VALUE, TimeUnit.MILLISECONDS);
+        Assert.assertEquals("first", cache.get("key"));
+        cache.add("key", "second", Long.MAX_VALUE, TimeUnit.MILLISECONDS);
+        Assert.assertEquals("second", cache.get("key"));
+    }
+
     @Test
     public void add_expire() throws InterruptedException {
 
@@ -116,7 +127,7 @@ public class CacheTest {
         });
         // load only once
         Assert.assertEquals(1, loadCount.intValue());
-        Thread.sleep(150);
+        Thread.sleep(110);
         Assert.assertEquals(2, loadCount.intValue());
         cache.remove("key");
 
