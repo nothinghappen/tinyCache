@@ -46,7 +46,7 @@ public class WheelTimer<T> {
     }
 
     /**
-     * reschedule a exsited node
+     * reschedule a existed node
      * @param node
      * @param deadline
      */

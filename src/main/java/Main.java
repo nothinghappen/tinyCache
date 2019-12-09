@@ -24,17 +24,19 @@ public class Main {
     public static void main(String[] args) throws IOException, InterruptedException {
 
         ci = CacheBuilder.newBuilder().setCapacity(1000).build();
-        getOrLoad("key1");
-        System.in.read();
-        run(2, () -> {
-            while (true) {
-                s = (String) ci.get("key1");
-            }
-        });
-        System.out.println(ci.get("key1"));
+        ci.getOrLoad("key", (key, oldValue) -> {
+            System.out.println(key + " Load in Thread : " + Thread.currentThread().getId() + " time: " + System.currentTimeMillis());
+            return "test";
+        }, 1000, TimeUnit.MILLISECONDS);
+        Thread.sleep(5000);
+        System.out.println("update !");
+        ci.getOrLoad("key", (key, oldValue) -> {
+            System.out.println(key + " Load in Thread : " + Thread.currentThread().getId() + " time: " + System.currentTimeMillis());
+            return "test";
+        }, 3000, TimeUnit.MILLISECONDS);
     }
 
-    public static void getOrLoad(String key) {
+        public static void getOrLoad(String key) {
         String value = (String) ci.getOrLoad(key, new CacheLoader() {
             @Override
             public Object load(String key, Object oldValue) {
