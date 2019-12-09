@@ -60,16 +60,27 @@ public class CacheImpl implements Cache {
 
     private WheelTimerConsumer<CacheItem, WheelTimer<CacheItem>, Long> expireAfterAccessConsumer = (ci, timeWheel, delta) -> {
         long currentExpireAfterAccessNanos = ci.expiration.expireAfterAccess(NANOSECONDS);
-        long currentExpireAfterAccessTicks = timeWheelTicker.convert(currentExpireAfterAccessNanos, NANOSECONDS);
-        long expireAfterAccessTicks = timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS);
-        long nowTicks = timeWheelTicker.read();
-        long rescheduleTicks = currentExpireAfterAccessTicks - expireAfterAccessTicks + delta;
-        if (rescheduleTicks > 0) {
-            ci.timeWheelNode = timeWheel.add(ci, nowTicks + rescheduleTicks);
-            ci.expireAfterAccess = currentExpireAfterAccessNanos;
-        } else {
-            doRemove(ci.key);
+        if (currentExpireAfterAccessNanos != ci.expireAfterAccess) {
+
+            if (currentExpireAfterAccessNanos <= 0) {
+                ci.expireAfterAccess = currentExpireAfterAccessNanos;
+                ci.timeWheelNode = null;
+                return;
+            }
+
+            // expireAfterAccess has been changed
+            long currentExpireAfterAccessTicks = timeWheelTicker.convert(currentExpireAfterAccessNanos, NANOSECONDS);
+            long expireAfterAccessTicks = timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS);
+            long nowTicks = timeWheelTicker.read();
+            long rescheduleTicks = currentExpireAfterAccessTicks - expireAfterAccessTicks + delta;
+            if (rescheduleTicks > 0) {
+                // still alive , according to new value of expireAfterAccess
+                ci.timeWheelNode = timeWheel.add(ci, nowTicks + rescheduleTicks);
+                ci.expireAfterAccess = currentExpireAfterAccessNanos;
+                return;
+            }
         }
+        doRemove(ci.key);
     };
 
     CacheImpl(int capacity, ExecutorService refreshBackend, AdvancedOption advancedOption) {
@@ -97,16 +108,7 @@ public class CacheImpl implements Cache {
             long expireAfterRefresh,
             long expireAfterAccess,
             TimeUnit unit) {
-        return getOrLoad(key, loader, new Expiration() {
-            @Override
-            public long expireAfterRefresh(TimeUnit timeUnit) {
-                return timeUnit.convert(expireAfterRefresh, unit);
-            }
-            @Override
-            public long expireAfterAccess(TimeUnit timeUnit) {
-                return timeUnit.convert(expireAfterAccess, unit);
-            }
-        });
+        return getOrLoad(key, loader, new FixedExpiration(expireAfterRefresh, unit, expireAfterAccess, unit));
     }
 
     @Override
@@ -167,16 +169,7 @@ public class CacheImpl implements Cache {
             long expireAfterRefresh,
             long expireAfterAccess,
             TimeUnit unit) {
-        return addAsync(key, value, new Expiration() {
-            @Override
-            public long expireAfterRefresh(TimeUnit timeUnit) {
-                return timeUnit.convert(expireAfterRefresh, unit);
-            }
-            @Override
-            public long expireAfterAccess(TimeUnit timeUnit) {
-                return timeUnit.convert(expireAfterAccess, unit);
-            }
-        });
+        return addAsync(key, value, new FixedExpiration(expireAfterRefresh, unit, expireAfterAccess, unit));
     }
 
     @Override
@@ -249,8 +242,8 @@ public class CacheImpl implements Cache {
 
     @RunIn("backend")
     private void doAdd(String key, Object value, Expiration expiration) {
-        RunnableFuture<CacheItem> exsiting = data.get(key);
-        if (exsiting != null) {
+        RunnableFuture<CacheItem> existing = data.get(key);
+        if (existing != null) {
             doRemove(key);
         }
         RunnableFuture<CacheItem> rf = data.computeIfAbsent(key, k -> new FutureTask<>(() -> {
@@ -292,9 +285,33 @@ public class CacheImpl implements Cache {
     }
 
     @RunIn("backend")
+    private void scheduleInTimeWheel(CacheItem ci) {
+        ci.timeWheelNode = timeWheel.add(
+                ci, timeWheelTicker.read() + timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS));
+    }
+
+    @RunIn("backend")
+    private void accessInTimeWheel(CacheItem ci) {
+        if (ci.timeWheelNode == null) {
+            return;
+        }
+        timeWheel.reschedule(ci.timeWheelNode,
+                timeWheelTicker.read() + timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS));
+    }
+
+    @RunIn("backend")
+    private void unScheduleInTimeWheel(CacheItem ci) {
+        if (ci.timeWheelNode == null) {
+            return;
+        }
+        timeWheel.unSchedule(ci.timeWheelNode);
+        ci.timeWheelNode = null;
+    }
+
+    @RunIn("backend")
     private void schedule(CacheItem ci) {
         long nano = ci.expiration.expireAfterRefresh(TimeUnit.NANOSECONDS);
-        ci.scheduled = new ScheduledTask(ci, true, nano, TimeUnit.NANOSECONDS, this.ticker);
+        ci.scheduled = new ScheduledTask(ci, nano, TimeUnit.NANOSECONDS, this.ticker);
         scheduleQueue.add(ci.scheduled);
     }
 
@@ -313,8 +330,7 @@ public class CacheImpl implements Cache {
             accessList.add(ci);
         }
         if (isExpireAfterAccess(ci)) {
-            ci.timeWheelNode = timeWheel.add(
-                    ci, timeWheelTicker.read() + timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS));
+            scheduleInTimeWheel(ci);
         }
     }
 
@@ -325,7 +341,7 @@ public class CacheImpl implements Cache {
             accessList.remove(ci);
         }
         if (isExpireAfterAccess(ci)) {
-            timeWheel.unSchedule(ci.timeWheelNode);
+            unScheduleInTimeWheel(ci);
         }
     }
 
@@ -387,7 +403,6 @@ public class CacheImpl implements Cache {
             this.value = loader.load(key, value);
         }
 
-
         public Future refreshAsync() {
             if (loader == null) {
                 doRemove(this.key);
@@ -400,11 +415,27 @@ public class CacheImpl implements Cache {
             } catch (RejectedExecutionException ex) {
                 // TODO: 2019/7/21 log refresh fail
             }
-            if (scheduled != null) {
-                scheduled.update(this.expiration.expireAfterRefresh(TimeUnit.NANOSECONDS), TimeUnit.NANOSECONDS);
-            }
-            this.expireAfterAccess = this.expiration.expireAfterAccess(NANOSECONDS);
+            afterRefresh();
             return f;
+        }
+
+        private void afterRefresh() {
+            if (this.scheduled != null) {
+                this.scheduled.update(this.expiration.expireAfterRefresh(TimeUnit.NANOSECONDS), TimeUnit.NANOSECONDS);
+            }
+            long currentExpireAfterAccess = expiration.expireAfterAccess(NANOSECONDS);
+            if (this.expireAfterAccess != currentExpireAfterAccess) {
+                this.expireAfterAccess = currentExpireAfterAccess;
+                if (currentExpireAfterAccess <= 0) {
+                    unScheduleInTimeWheel(this);
+                } else {
+                    if (this.timeWheelNode != null) {
+                        accessInTimeWheel(this);
+                    } else {
+                        scheduleInTimeWheel(this);
+                    }
+                }
+            }
         }
 
         @Override
@@ -555,7 +586,7 @@ public class CacheImpl implements Cache {
                 accessList.access(ci);
             }
             if (isExpireAfterAccess(ci)) {
-                timeWheel.reschedule(ci.timeWheelNode, timeWheelTicker.read() + timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS));
+                accessInTimeWheel(ci);
             }
         }
 
@@ -612,27 +643,17 @@ public class CacheImpl implements Cache {
         private long deadline;
         private long delayNanos;
         private final Runnable command;
-        private final boolean scheduled;
         private final Ticker ticker;
 
-        public ScheduledTask(Runnable command, boolean scheduled, long duration, TimeUnit timeUnit, Ticker ticker) {
+        public ScheduledTask(Runnable command, long duration, TimeUnit timeUnit, Ticker ticker) {
             this.ticker = ticker;
             this.delayNanos = duration < 0 ? 0 : timeUnit.toNanos(duration);
             this.deadline = overflowFree(this.delayNanos, now());
             this.command = command;
-            this.scheduled = scheduled;
-        }
-
-        private boolean isScheduled() {
-            return this.scheduled;
         }
 
         public void reset() {
             this.deadline = overflowFree(this.delayNanos, now());
-        }
-
-        public void immediate() {
-            this.deadline = now();
         }
 
         @Override

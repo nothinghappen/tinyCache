@@ -17,4 +17,5 @@ public interface Expiration {
      * @return
      */
     long expireAfterAccess(TimeUnit timeUnit);
+
 }

@@ -123,7 +123,7 @@ public class CacheTest {
     }
 
     @Test
-    public void expireAfterAccess() throws InterruptedException {
+    public void expireAfterAccess() {
 
         TestTicker testTicker = new TestTicker();
         cache = CacheBuilder.newBuilder()
@@ -136,17 +136,24 @@ public class CacheTest {
 
         cache.addAsync("key", VALUE, 10000, 100, TimeUnit.MILLISECONDS);
         CachingTest.maintenance(cacheImpl);
+
         testTicker.ticks = 50;
         CachingTest.maintenance(cacheImpl);
         Assert.assertEquals(VALUE, cache.get("key"));
+
         CachingTest.maintenance(cacheImpl);
-        testTicker.ticks = 150;
+        testTicker.ticks = 149;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertNotNull(cache.get("key"));
+
+        CachingTest.maintenance(cacheImpl);
+        testTicker.ticks = 249;
         CachingTest.maintenance(cacheImpl);
         Assert.assertNull(cache.get("key"));
     }
 
     @Test
-    public void expireAfterAccess2() throws InterruptedException {
+    public void expireAfterAccess2() {
 
         TestTicker testTicker = new TestTicker();
         cache = CacheBuilder.newBuilder()
@@ -184,7 +191,7 @@ public class CacheTest {
     }
 
     @Test
-    public void expireAfterAccess3() throws InterruptedException {
+    public void expireAfterAccess3() {
 
         TestTicker testTicker = new TestTicker();
         cache = CacheBuilder.newBuilder()
@@ -192,9 +199,8 @@ public class CacheTest {
                 .advancedOption(new AdvancedOption().setTimeWheelTicker(testTicker))
                 .build();
         CacheImpl cacheImpl = (CacheImpl) cache;
-        CachingTest.stopBackend(cacheImpl);
         cacheImpl.timeWheelTicker = testTicker;
-
+        CachingTest.stopBackend(cacheImpl);
         Holder<Long> expireAfterAccess = new Holder<>(10L);
         cache.addAsync("key", VALUE, new Expiration() {
             @Override
@@ -206,11 +212,210 @@ public class CacheTest {
                 return timeUnit.convert(expireAfterAccess.value, TimeUnit.MILLISECONDS);
             }
         });
+
         CachingTest.maintenance(cacheImpl);
         expireAfterAccess.value = 100L;
+        testTicker.ticks = 10;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertTrue(CachingTest.peek(cacheImpl, "key"));
+        CachingTest.maintenance(cacheImpl);
+        testTicker.ticks = 99;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertTrue(CachingTest.peek(cacheImpl, "key"));
         testTicker.ticks = 100;
         CachingTest.maintenance(cacheImpl);
         Assert.assertFalse(CachingTest.peek(cacheImpl, "key"));
+
+        cache.addAsync("key", VALUE, new Expiration() {
+            @Override
+            public long expireAfterRefresh(TimeUnit timeUnit) {
+                return timeUnit.convert(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+            }
+            @Override
+            public long expireAfterAccess(TimeUnit timeUnit) {
+                return timeUnit.convert(expireAfterAccess.value, TimeUnit.MILLISECONDS);
+            }
+        });
+        CachingTest.maintenance(cacheImpl);
+
+        testTicker.ticks = 199;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertTrue(CachingTest.peek(cacheImpl, "key"));
+
+        testTicker.ticks = 200;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertFalse(CachingTest.peek(cacheImpl, "key"));
+
+        cache.addAsync("key", VALUE, new Expiration() {
+            @Override
+            public long expireAfterRefresh(TimeUnit timeUnit) {
+                return timeUnit.convert(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+            }
+            @Override
+            public long expireAfterAccess(TimeUnit timeUnit) {
+                return timeUnit.convert(expireAfterAccess.value, TimeUnit.MILLISECONDS);
+            }
+        });
+        CachingTest.maintenance(cacheImpl);
+
+        testTicker.ticks = 300;
+        expireAfterAccess.value = 101L;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertTrue(CachingTest.peek(cacheImpl, "key"));
+
+        testTicker.ticks = 301;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertFalse(CachingTest.peek(cacheImpl, "key"));
+
+        testTicker.ticks = 400;
+        CachingTest.maintenance(cacheImpl);
+
+        expireAfterAccess.value = 100L;
+        cache.addAsync("key", VALUE, new Expiration() {
+            @Override
+            public long expireAfterRefresh(TimeUnit timeUnit) {
+                return timeUnit.convert(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+            }
+            @Override
+            public long expireAfterAccess(TimeUnit timeUnit) {
+                return timeUnit.convert(expireAfterAccess.value, TimeUnit.MILLISECONDS);
+            }
+        });
+        CachingTest.maintenance(cacheImpl);
+
+        expireAfterAccess.value = 101L;
+        testTicker.ticks = 501;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertFalse(CachingTest.peek(cacheImpl, "key"));
+
+        testTicker.ticks = 600;
+        CachingTest.maintenance(cacheImpl);
+
+        expireAfterAccess.value = 100L;
+        cache.addAsync("key", VALUE, new Expiration() {
+            @Override
+            public long expireAfterRefresh(TimeUnit timeUnit) {
+                return timeUnit.convert(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+            }
+            @Override
+            public long expireAfterAccess(TimeUnit timeUnit) {
+                return timeUnit.convert(expireAfterAccess.value, TimeUnit.MILLISECONDS);
+            }
+        });
+        CachingTest.maintenance(cacheImpl);
+
+        testTicker.ticks = 700;
+        expireAfterAccess.value = 0L;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertTrue(CachingTest.peek(cacheImpl, "key"));
+
+    }
+
+    @Test
+    public void expireAfterAccess4() {
+
+        TestTicker testTicker = new TestTicker();
+        cache = CacheBuilder.newBuilder()
+                .setRefreshBackend(refreshBackend)
+                .advancedOption(new AdvancedOption().setTimeWheelTicker(testTicker))
+                .build();
+        CacheImpl cacheImpl = (CacheImpl) cache;
+        cacheImpl.timeWheelTicker = testTicker;
+
+        Holder<Long> expireAfterAccess = new Holder<>(Long.MAX_VALUE);
+        cacheImpl.getOrLoad("key", (k,v) -> VALUE, new Expiration() {
+            @Override
+            public long expireAfterRefresh(TimeUnit timeUnit) {
+                return timeUnit.convert(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+            }
+            @Override
+            public long expireAfterAccess(TimeUnit timeUnit) {
+                return timeUnit.convert(expireAfterAccess.value, TimeUnit.MILLISECONDS);
+            }
+        });
+        CachingTest.stopBackend(cacheImpl);
+
+        expireAfterAccess.value = 10L;
+        cacheImpl.refreshAsync("key");
+        CachingTest.maintenance(cacheImpl);
+
+        testTicker.ticks = 9;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertTrue(CachingTest.peek(cacheImpl, "key"));
+
+        testTicker.ticks = 10;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertFalse(CachingTest.peek(cacheImpl, "key"));
+    }
+
+    @Test
+    public void expireAfterAccess5() {
+
+        TestTicker testTicker = new TestTicker();
+        cache = CacheBuilder.newBuilder()
+                .setRefreshBackend(refreshBackend)
+                .advancedOption(new AdvancedOption().setTimeWheelTicker(testTicker))
+                .build();
+        CacheImpl cacheImpl = (CacheImpl) cache;
+        cacheImpl.timeWheelTicker = testTicker;
+
+        Holder<Long> expireAfterAccess = new Holder<>(0L);
+        cacheImpl.getOrLoad("key", (k,v) -> VALUE, new Expiration() {
+            @Override
+            public long expireAfterRefresh(TimeUnit timeUnit) {
+                return timeUnit.convert(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+            }
+            @Override
+            public long expireAfterAccess(TimeUnit timeUnit) {
+                return timeUnit.convert(expireAfterAccess.value, TimeUnit.MILLISECONDS);
+            }
+        });
+        CachingTest.stopBackend(cacheImpl);
+
+        expireAfterAccess.value = 10L;
+        cacheImpl.refreshAsync("key");
+        CachingTest.maintenance(cacheImpl);
+
+        testTicker.ticks = 9;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertTrue(CachingTest.peek(cacheImpl, "key"));
+
+        testTicker.ticks = 10;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertFalse(CachingTest.peek(cacheImpl, "key"));
+    }
+
+    @Test
+    public void expireAfterAccess6() {
+
+        TestTicker testTicker = new TestTicker();
+        cache = CacheBuilder.newBuilder()
+                .setRefreshBackend(refreshBackend)
+                .advancedOption(new AdvancedOption().setTimeWheelTicker(testTicker))
+                .build();
+        CacheImpl cacheImpl = (CacheImpl) cache;
+        cacheImpl.timeWheelTicker = testTicker;
+
+        Holder<Long> expireAfterAccess = new Holder<>(10L);
+        cacheImpl.getOrLoad("key", (k,v) -> VALUE, new Expiration() {
+            @Override
+            public long expireAfterRefresh(TimeUnit timeUnit) {
+                return timeUnit.convert(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+            }
+            @Override
+            public long expireAfterAccess(TimeUnit timeUnit) {
+                return timeUnit.convert(expireAfterAccess.value, TimeUnit.MILLISECONDS);
+            }
+        });
+        CachingTest.stopBackend(cacheImpl);
+
+        expireAfterAccess.value = 0L;
+        cacheImpl.refreshAsync("key");
+        CachingTest.maintenance(cacheImpl);
+
+        testTicker.ticks = Long.MAX_VALUE;
+        CachingTest.maintenance(cacheImpl);
+        Assert.assertTrue(CachingTest.peek(cacheImpl, "key"));
     }
 
     @Test
