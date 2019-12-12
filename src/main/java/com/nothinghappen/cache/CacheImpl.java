@@ -8,6 +8,7 @@ import com.nothinghappen.cache.datastruct.RingBuffer;
 import com.nothinghappen.cache.datastruct.UnboundedBuffer;
 import com.nothinghappen.cache.datastruct.WheelTimer;
 import com.nothinghappen.cache.datastruct.WheelTimerConsumer;
+import com.nothinghappen.cache.datastruct.WheelTimerNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -16,17 +17,13 @@ import java.util.PriorityQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.Delayed;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
-import java.util.concurrent.FutureTask;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.RunnableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -46,7 +43,7 @@ public class CacheImpl implements Cache {
 
     final Buffer<Runnable> userEventBuffer = new UnboundedBuffer<>();
 
-    final PriorityQueue<ScheduledTask> scheduleQueue = new PriorityQueue<>();
+    final PriorityQueue<Scheduled<CacheItem>> scheduleQueue = new PriorityQueue<>();
 
     final AccessList<CacheItem> accessList = new AccessLinkedList();
 
@@ -71,7 +68,7 @@ public class CacheImpl implements Cache {
 
                     if (currentExpireAfterAccessNanos <= 0) {
                         ci.expireAfterAccess = currentExpireAfterAccessNanos;
-                        ci.timeWheelNode = null;
+                        ci.wheelTimerNode = null;
                         return;
                     }
 
@@ -83,7 +80,7 @@ public class CacheImpl implements Cache {
                     long rescheduleTicks = currentExpireAfterAccessTicks - expireAfterAccessTicks + delta;
                     if (rescheduleTicks > 0) {
                         // still alive , according to new value of expireAfterAccess
-                        ci.timeWheelNode = timeWheel.add(ci, nowTicks + rescheduleTicks);
+                        ci.wheelTimerNode = timeWheel.add(ci, nowTicks + rescheduleTicks);
                         ci.expireAfterAccess = currentExpireAfterAccessNanos;
                         return;
                     }
@@ -129,9 +126,8 @@ public class CacheImpl implements Cache {
             if (ci == null) {
                 // slow path
                 ci = CompletableFuture.supplyAsync(() -> doGetOrLoad(key, loader, expiration), backend).get();
-
             }
-            ci.refreshSync();
+            ci.load();
             afterRead(ci);
             return ci.value;
         } catch (InterruptedException | ExecutionException e) {
@@ -151,7 +147,7 @@ public class CacheImpl implements Cache {
     }
 
     @Override
-    public CompletableFuture removeAsync(String key) {
+    public Future<Void> removeAsync(String key) {
         requireNonNull(key);
         return CompletableFuture.runAsync(() -> doRemove(key), backend);
     }
@@ -166,12 +162,12 @@ public class CacheImpl implements Cache {
     }
 
     @Override
-    public CompletableFuture addAsync(String key, Object value, long expireAfterRefresh, TimeUnit unit) {
+    public Future<Void> addAsync(String key, Object value, long expireAfterRefresh, TimeUnit unit) {
         return addAsync(key, value, expireAfterRefresh, 0, unit);
     }
 
     @Override
-    public CompletableFuture addAsync(String key,
+    public Future<Void> addAsync(String key,
             Object value,
             long expireAfterRefresh,
             long expireAfterAccess,
@@ -180,7 +176,7 @@ public class CacheImpl implements Cache {
     }
 
     @Override
-    public CompletableFuture addAsync(String key, Object value, Expiration expiration) {
+    public Future<Void> addAsync(String key, Object value, Expiration expiration) {
         requireNonNull(key, value, expiration);
         return CompletableFuture.runAsync(
                 () -> doAdd(key, value, expiration), backend);
@@ -210,7 +206,7 @@ public class CacheImpl implements Cache {
     }
 
     @Override
-    public CompletableFuture<Future> refreshAsync(String key) {
+    public Future<Future<Void>> refreshAsync(String key) {
         requireNonNull(key);
         return CompletableFuture.supplyAsync(() -> doRefresh(key), backend);
     }
@@ -218,12 +214,7 @@ public class CacheImpl implements Cache {
     @Override
     public void refresh(String key) {
         try {
-            Future f = refreshAsync(key).get();
-            if (f == null) {
-                // refresh failed , or had been removed (since no loader)
-                return;
-            }
-            f.get();
+            refreshAsync(key).get().get();
         } catch (InterruptedException | ExecutionException e) {
             LOGGER.error("refresh", e);
         }
@@ -269,42 +260,42 @@ public class CacheImpl implements Cache {
     }
 
     @RunIn("backend")
-    private Future doRefresh(String key) {
+    private Future<Void> doRefresh(String key) {
         CacheItem ci = data.get(key);
         if (ci == null) {
-            return null;
+            return CompletableFuture.completedFuture(null);
         }
         return ci.refreshAsync();
     }
 
     @RunIn("backend")
     private void scheduleInTimeWheel(CacheItem ci) {
-        ci.timeWheelNode = timeWheel.add(
+        ci.wheelTimerNode = timeWheel.add(
                 ci, timeWheelTicker.read() + timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS));
     }
 
     @RunIn("backend")
     private void accessInTimeWheel(CacheItem ci) {
-        if (ci.timeWheelNode == null) {
+        if (ci.wheelTimerNode == null) {
             return;
         }
-        timeWheel.reschedule(ci.timeWheelNode,
+        timeWheel.reschedule(ci.wheelTimerNode,
                 timeWheelTicker.read() + timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS));
     }
 
     @RunIn("backend")
     private void unScheduleInTimeWheel(CacheItem ci) {
-        if (ci.timeWheelNode == null) {
+        if (ci.wheelTimerNode == null) {
             return;
         }
-        timeWheel.unSchedule(ci.timeWheelNode);
-        ci.timeWheelNode = null;
+        timeWheel.unSchedule(ci.wheelTimerNode);
+        ci.wheelTimerNode = null;
     }
 
     @RunIn("backend")
     private void schedule(CacheItem ci) {
         long nano = ci.expiration.expireAfterRefresh(TimeUnit.NANOSECONDS);
-        ci.scheduled = new ScheduledTask(ci, nano, TimeUnit.NANOSECONDS, this.ticker);
+        ci.scheduled = new Scheduled<>(ci, nano, TimeUnit.NANOSECONDS, this.ticker);
         scheduleQueue.add(ci.scheduled);
     }
 
@@ -364,16 +355,19 @@ public class CacheImpl implements Cache {
         return this.isEvict;
     }
 
-    private class CacheItem implements Runnable, AccessOrder<CacheItem> {
+    private class CacheItem implements AccessOrder<CacheItem> {
 
         private ReentrantLock lock = new ReentrantLock();
 
         private final String key;
         private final CacheLoader loader;
         private final Expiration expiration;
-        private ScheduledTask scheduled;
-        private WheelTimer.Node<CacheItem> timeWheelNode;
-        private volatile Object value;
+
+        private Scheduled<CacheItem> scheduled;
+        private WheelTimerNode<CacheItem> wheelTimerNode;
+
+        private Object value;
+
         private AtomicLong lastAccessTime = new AtomicLong();
         private long expireAfterAccess;
 
@@ -394,11 +388,11 @@ public class CacheImpl implements Cache {
         }
 
         @RunIn({"customer", "refreshBackend"})
-        public void load() {
+        void doRefresh() {
             this.value = loader.load(key, value);
         }
 
-        public void refreshSync() {
+        void load() {
             if (this.value != null) {
                 // load completed
                 return;
@@ -406,24 +400,24 @@ public class CacheImpl implements Cache {
             try {
                 lock.lock();
                 if (this.value == null) {
-                    load();
+                    doRefresh();
                 }
             } catch (Exception ex) {
-                LOGGER.error("CacheItem refreshSync", ex);
+                LOGGER.error("CacheItem load", ex);
             } finally {
                 lock.unlock();
             }
         }
 
-        public Future refreshAsync() {
+        Future<Void> refreshAsync() {
+            Future<Void> f = CompletableFuture.completedFuture(null);
             if (loader == null) {
                 doRemove(this.key);
-                return null;
+                return f;
             }
-            // load
-            Future f = null;
+            // doRefresh
             try {
-                f = refreshBackend.submit(this::load);
+                f = CompletableFuture.runAsync(this::doRefresh, refreshBackend);
             } catch (RejectedExecutionException ex) {
                 LOGGER.error("refreshAsync rejected", ex);
             }
@@ -441,19 +435,13 @@ public class CacheImpl implements Cache {
                 if (currentExpireAfterAccess <= 0) {
                     unScheduleInTimeWheel(this);
                 } else {
-                    if (this.timeWheelNode != null) {
+                    if (this.wheelTimerNode != null) {
                         accessInTimeWheel(this);
                     } else {
                         scheduleInTimeWheel(this);
                     }
                 }
             }
-        }
-
-        @Override
-        @RunIn("backend")
-        public void run() {
-            refreshAsync();
         }
 
         @Override
@@ -479,7 +467,7 @@ public class CacheImpl implements Cache {
 
         private CacheItem head = new CacheItem(null, null, null);
 
-        public AccessLinkedList() {
+        AccessLinkedList() {
             head.setNext(head);
             head.setPrev(head);
         }
@@ -553,14 +541,14 @@ public class CacheImpl implements Cache {
             LockSupport.park();
         }
 
-        public void unpark() {
+        void unpark() {
             LockSupport.unpark(this.thread);
         }
 
         @RunIn("backend")
         void maintenance() {
             drainUserEvent();
-            doScheduleTask();
+            doScheduleWork();
             drainBuffer();
             evict();
             expireAfterAccess();
@@ -575,11 +563,12 @@ public class CacheImpl implements Cache {
             }
         }
 
-        void doScheduleTask() {
-            ScheduledTask task;
-            if ((task = getTask()) != null) {
-                task.run();
-                rescheduleWork(task);
+        void doScheduleWork() {
+            Scheduled<CacheItem> scheduled;
+            if ((scheduled = getScheduled()) != null) {
+                CacheItem ci = scheduled.getValue();
+                ci.refreshAsync();
+                rescheduleWork(scheduled);
             }
         }
 
@@ -624,15 +613,15 @@ public class CacheImpl implements Cache {
         /**
          * reschedule if needed
          */
-        void rescheduleWork(ScheduledTask work) {
+        void rescheduleWork(Scheduled<CacheItem> work) {
             // reschedule
             work.reset();
             scheduleQueue.add(work);
         }
 
-        ScheduledTask getTask() {
-            ScheduledTask st = scheduleQueue.peek();
-            if (st != null && st.getDelay(NANOSECONDS) <= MIN_DELAYED_NANO) {
+        Scheduled<CacheItem> getScheduled() {
+            Scheduled<CacheItem> sc = scheduleQueue.peek();
+            if (sc != null && sc.getDelay(NANOSECONDS) <= MIN_DELAYED_NANO) {
                 return scheduleQueue.poll();
             }
             return null;
@@ -640,69 +629,12 @@ public class CacheImpl implements Cache {
 
         void peekTaskAndWait() {
             long delayNanos = 0;
-            ScheduledTask st = scheduleQueue.peek();
-            if (st == null) {
+            Scheduled<CacheItem> sc = scheduleQueue.peek();
+            if (sc == null) {
                 park();
-            } else if ((delayNanos = st.getDelay(NANOSECONDS)) > MIN_DELAYED_NANO) {
+            } else if ((delayNanos = sc.getDelay(NANOSECONDS)) > MIN_DELAYED_NANO) {
                 park(delayNanos);
             }
-        }
-    }
-
-
-    static class ScheduledTask implements Delayed, Runnable {
-
-        private long deadline;
-        private long delayNanos;
-        private final Runnable command;
-        private final Ticker ticker;
-
-        public ScheduledTask(Runnable command, long duration, TimeUnit timeUnit, Ticker ticker) {
-            this.ticker = ticker;
-            this.delayNanos = duration < 0 ? 0 : timeUnit.toNanos(duration);
-            this.deadline = overflowFree(this.delayNanos, now());
-            this.command = command;
-        }
-
-        public void reset() {
-            this.deadline = overflowFree(this.delayNanos, now());
-        }
-
-        @Override
-        public long getDelay(TimeUnit unit) {
-            return unit.convert(deadline - now(), TimeUnit.NANOSECONDS);
-        }
-
-        @Override
-        public void run() {
-            command.run();
-        }
-
-        public void update(long duration, TimeUnit timeUnit) {
-            this.delayNanos = timeUnit.toNanos(duration);
-        }
-
-        @Override
-        public int compareTo(Delayed other) {
-            if (this == other) {
-                return 0;
-            }
-            long diff = getDelay(NANOSECONDS) - other.getDelay(NANOSECONDS);
-            return (diff < 0) ? -1 : (diff > 0) ? 1 : 0;
-        }
-
-        private long now() {
-            return ticker.read(NANOSECONDS);
-        }
-
-        /**
-         * Long.MAX_VALUE if it would positively overflow.
-         */
-        private long overflowFree(long delayNanos, long now) {
-            if (Long.MAX_VALUE - delayNanos < now) {
-                return Long.MAX_VALUE;
-            }
-            return delayNanos + now;
         }
     }
 }

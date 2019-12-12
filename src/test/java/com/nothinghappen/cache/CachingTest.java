@@ -1,10 +1,5 @@
 package com.nothinghappen.cache;
 
-import com.nothinghappen.cache.CacheImpl;
-
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-
 public class CachingTest {
 
     public static boolean peek(CacheImpl cache, String key) {
@@ -18,7 +13,7 @@ public class CachingTest {
 
     public static void maintenance(CacheImpl cache) {
         cache.backend.drainUserEvent();
-        cache.backend.doScheduleTask();
+        cache.backend.doScheduleWork();
         cache.backend.drainBuffer();
         cache.backend.evict();
         cache.backend.expireAfterAccess();

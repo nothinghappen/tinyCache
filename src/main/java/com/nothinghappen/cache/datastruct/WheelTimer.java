@@ -1,7 +1,5 @@
 package com.nothinghappen.cache.datastruct;
 
-import java.util.function.BiConsumer;
-
 public class WheelTimer<T> {
 
     private int bucket_size = 16;
@@ -12,7 +10,7 @@ public class WheelTimer<T> {
 
     private WheelTimerConsumer<T, WheelTimer<T>, Long> consumer;
 
-    private Node<T>[] buckets;
+    private WheelTimerNode<T>[] buckets;
 
     private WheelTimer<T> overflow;
     private WheelTimer<T> root;
@@ -38,27 +36,27 @@ public class WheelTimer<T> {
         this.init(bucket_size, biConsumer, nowTicks, root, interval);
     }
 
-    public Node<T> add(T t, long deadline) {
-        Node<T> head = findBucket(deadline);
-        Node<T> newNode = new Node<>(t, deadline);
-        link(head, newNode);
-        return newNode;
+    public WheelTimerNode<T> add(T t, long deadline) {
+        WheelTimerNode<T> head = findBucket(deadline);
+        WheelTimerNode<T> newWheelTimerNode = new WheelTimerNode<>(t, deadline);
+        link(head, newWheelTimerNode);
+        return newWheelTimerNode;
     }
 
     /**
-     * reschedule a existed node
-     * @param node
+     * reschedule a existed wheelTimerNode
+     * @param wheelTimerNode
      * @param deadline
      */
-    public void reschedule(Node<T> node, long deadline) {
-        unlinked(node);
-        node.deadline = deadline;
-        Node<T> head = findBucket(deadline);
-        link(head, node);
+    public void reschedule(WheelTimerNode<T> wheelTimerNode, long deadline) {
+        unlinked(wheelTimerNode);
+        wheelTimerNode.setDeadline(deadline);
+        WheelTimerNode<T> head = findBucket(deadline);
+        link(head, wheelTimerNode);
     }
 
-    public void unSchedule(Node<T> node) {
-        unlinked(node);
+    public void unSchedule(WheelTimerNode<T> wheelTimerNode) {
+        unlinked(wheelTimerNode);
     }
 
     public void advance(long nowTicks) {
@@ -81,7 +79,7 @@ public class WheelTimer<T> {
     private void init(int bucket_size, WheelTimerConsumer<T, WheelTimer<T>, Long> consumer, long nowTicks, WheelTimer<T> root, long interval) {
         this.bucket_size = bucket_size;
         this.mask = bucket_size - 1;
-        this.buckets = new Node[bucket_size];
+        this.buckets = new WheelTimerNode[bucket_size];
         this.consumer = consumer;
         this.currentTicks = nowTicks;
         this.root = root;
@@ -91,38 +89,38 @@ public class WheelTimer<T> {
         }
     }
 
-    private Node<T> createDummy() {
-        Node<T> node = new Node<>(null, 0);
-        node.setNext(node);
-        node.setPrev(node);
-        return node;
+    private WheelTimerNode<T> createDummy() {
+        WheelTimerNode<T> wheelTimerNode = new WheelTimerNode<>(null, 0);
+        wheelTimerNode.setNext(wheelTimerNode);
+        wheelTimerNode.setPrev(wheelTimerNode);
+        return wheelTimerNode;
     }
 
-    private void link(Node<T> head, Node<T> node) {
-        Node<T> prev = head.getPrev();
-        prev.setNext(node);
-        node.setPrev(prev);
-        node.setNext(head);
-        head.setPrev(node);
+    private void link(WheelTimerNode<T> head, WheelTimerNode<T> wheelTimerNode) {
+        WheelTimerNode<T> prev = head.getPrev();
+        prev.setNext(wheelTimerNode);
+        wheelTimerNode.setPrev(prev);
+        wheelTimerNode.setNext(head);
+        head.setPrev(wheelTimerNode);
     }
 
-    private void unlinked(Node<T> node) {
-        if (isUnlinked(node)) {
+    private void unlinked(WheelTimerNode<T> wheelTimerNode) {
+        if (isUnlinked(wheelTimerNode)) {
             return;
         }
-        Node<T> next = node.getNext();
-        Node<T> prev = node.getPrev();
+        WheelTimerNode<T> next = wheelTimerNode.getNext();
+        WheelTimerNode<T> prev = wheelTimerNode.getPrev();
         next.setPrev(prev);
         prev.setNext(next);
-        node.setNext(null);
-        node.setPrev(null);
+        wheelTimerNode.setNext(null);
+        wheelTimerNode.setPrev(null);
     }
 
-    private boolean isUnlinked(Node<T> node) {
-        return node.getNext() == null || node.getPrev() == null;
+    private boolean isUnlinked(WheelTimerNode<T> wheelTimerNode) {
+        return wheelTimerNode.getNext() == null || wheelTimerNode.getPrev() == null;
     }
 
-    private Node<T> doFindBucket(long deadline) {
+    private WheelTimerNode<T> doFindBucket(long deadline) {
         long n = (deadline - currentTicks) / ticks_interval;
         if (n <= 0) {
             n = 1;
@@ -135,8 +133,8 @@ public class WheelTimer<T> {
         }
     }
 
-    private Node<T> findBucket(long deadline) {
-        Node<T> head;
+    private WheelTimerNode<T> findBucket(long deadline) {
+        WheelTimerNode<T> head;
         if ((head = doFindBucket(deadline)) == null) {
             head = overFlow().findBucket(deadline);
         }
@@ -162,53 +160,18 @@ public class WheelTimer<T> {
         return this.overflow;
     }
 
-    private void consume(Node<T> head, long nowTicks) {
-        Node<T> current = head.getNext();
+    private void consume(WheelTimerNode<T> head, long nowTicks) {
+        WheelTimerNode<T> current = head.getNext();
         while (current != head) {
-            Node<T> next = current.getNext();
+            WheelTimerNode<T> next = current.getNext();
             unlinked(current);
-            if (current.deadline > nowTicks) {
+            if (current.getDeadline() > nowTicks) {
                 // still alive
-                link(root().findBucket(current.deadline), current);
+                link(root().findBucket(current.getDeadline()), current);
             } else {
-                consumer.accept(current.value, root(), current.deadline - nowTicks);
+                consumer.accept(current.getValue(), root(), current.getDeadline() - nowTicks);
             }
             current = next;
         }
     }
-
-    public static class Node<T> implements AccessOrder<Node<T>> {
-
-        private T value;
-        private Node<T> next;
-        private Node<T> prev;
-        private long deadline;
-
-        Node(T t, long deadline) {
-            this.value = t;
-            this.deadline = deadline;
-        }
-
-        public T getValue() {
-            return value;
-        }
-        @Override
-        public Node<T> getNext() {
-            return next;
-        }
-        @Override
-        public void setNext(Node<T> next) {
-            this.next = next;
-        }
-        @Override
-        public Node<T> getPrev() {
-            return prev;
-        }
-        @Override
-        public void setPrev(Node<T> prev) {
-            this.prev = prev;
-        }
-    }
-
-
 }

@@ -1,6 +1,7 @@
 package com.nothinghappen.cache;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 public interface Cache {
@@ -13,15 +14,15 @@ public interface Cache {
 
     Object get(String key);
 
-    CompletableFuture removeAsync(String key);
+    Future<Void> removeAsync(String key);
 
     void remove(String key);
 
-    CompletableFuture addAsync(String key, Object value, long expireAfterRefresh, TimeUnit unit);
+    Future<Void> addAsync(String key, Object value, long expireAfterRefresh, TimeUnit unit);
 
-    CompletableFuture addAsync(String key, Object value, long expireAfterRefresh, long expireAfterAccess, TimeUnit unit);
+    Future<Void> addAsync(String key, Object value, long expireAfterRefresh, long expireAfterAccess, TimeUnit unit);
 
-    CompletableFuture addAsync(String key, Object value, Expiration expiration);
+    Future<Void> addAsync(String key, Object value, Expiration expiration);
 
     void add(String key, Object value, long expireAfterRefresh, TimeUnit unit);
 
@@ -29,7 +30,7 @@ public interface Cache {
 
     void add(String key, Object value, Expiration expiration);
 
-    CompletableFuture refreshAsync(String key);
+    Future<Future<Void>> refreshAsync(String key);
 
     void refresh(String key);
 

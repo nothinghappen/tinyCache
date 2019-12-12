@@ -69,7 +69,7 @@ public class CacheTest {
     }
 
     @Test
-    public void refresh() throws InterruptedException {
+    public void refresh() {
         cache = CacheBuilder.newBuilder().setRefreshBackend(refreshBackend).build();
         Holder<String> valueSupplier = new Holder<>("world");
         cache.getOrLoad("hello", (k,v) -> valueSupplier.value, Long.MAX_VALUE, TimeUnit.NANOSECONDS);
@@ -77,6 +77,9 @@ public class CacheTest {
         valueSupplier.value = "world2";
         cache.refresh("hello");
         Assert.assertEquals("world2", cache.get("hello"));
+        // nonexistent key
+        cache.refresh("hello2");
+        Assert.assertNull(cache.get("hello2"));
     }
 
     @Test
@@ -95,6 +98,9 @@ public class CacheTest {
 
         cache.add("key", VALUE, Long.MAX_VALUE, TimeUnit.NANOSECONDS);
         Assert.assertEquals(VALUE, cache.get("key"));
+        cache.remove("key");
+        Assert.assertNull(cache.get("key"));
+        // nonexistent key
         cache.remove("key");
         Assert.assertNull(cache.get("key"));
     }
@@ -125,7 +131,7 @@ public class CacheTest {
                 return VALUE;
             }, 100, TimeUnit.MILLISECONDS);
         });
-        // load only once
+        // doRefresh only once
         Assert.assertEquals(1, loadCount.intValue());
         Thread.sleep(110);
         Assert.assertEquals(2, loadCount.intValue());
