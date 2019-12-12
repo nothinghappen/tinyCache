@@ -1,6 +1,7 @@
 package com.nothinghappen.cache;
 
 import com.nothinghappen.cache.datastruct.WheelTimer;
+import com.nothinghappen.cache.datastruct.WheelTimerNode;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -13,8 +14,6 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Warmup;
 
-import java.util.PriorityQueue;
-import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 
@@ -30,7 +29,7 @@ public class WheelTimerBenchmark {
     private final int CAPACITY = 10000;
     // size = 16
     private WheelTimer<String> timewheel = new WheelTimer<>(4, (s, w, d) -> {}, 0);
-    private WheelTimer.Node<String>[] nodes = new WheelTimer.Node[CAPACITY];
+    private WheelTimerNode<String>[] wheelTimerNodes = new WheelTimerNode[CAPACITY];
 
     private TreeSet<Integer> treeSet = new TreeSet<>();
     private Integer integer;
@@ -46,14 +45,14 @@ public class WheelTimerBenchmark {
 
         integer = delay;
         for (int i = 0; i < CAPACITY; i++) {
-            nodes[i] = timewheel.add("hello world", delay);
+            wheelTimerNodes[i] = timewheel.add("hello world", delay);
             treeSet.add(i);
         }
     }
 
     @Benchmark
     public void wheelTimer() {
-        timewheel.reschedule(nodes[delay], delay);
+        timewheel.reschedule(wheelTimerNodes[delay], delay);
     }
 
     @Benchmark
