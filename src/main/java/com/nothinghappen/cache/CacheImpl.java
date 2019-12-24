@@ -17,6 +17,7 @@ import java.util.PriorityQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Delayed;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
@@ -43,7 +44,7 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
 
     final Buffer<Runnable> userEventBuffer = new UnboundedBuffer<>();
 
-    final PriorityQueue<Scheduled<CacheItem>> scheduleQueue = new PriorityQueue<>();
+    final PriorityQueue<CacheItem> scheduleQueue = new PriorityQueue<>();
 
     final AccessList<CacheItem> accessList = new AccessLinkedList();
 
@@ -248,7 +249,7 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         if (ci != null) {
             return ci;
         }
-        ci = new CacheItem(key, loader, expiration);
+        ci = new CacheItem(key, loader, expiration, this.ticker);
         afterWrite(ci);
         data.put(key, ci);
         return ci;
@@ -260,7 +261,7 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         if (existing != null) {
             doRemove(key, RemovalCause.ADD);
         }
-        CacheItem ci = new CacheItem(key, null, expiration);
+        CacheItem ci = new CacheItem(key, null, expiration, this.ticker);
         ci.value = value;
         afterWrite(ci);
         data.put(key, ci);
@@ -318,17 +319,12 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
 
     @RunIn("backend")
     private void schedule(CacheItem ci) {
-        long nano = ci.expiration.expireAfterRefresh(TimeUnit.NANOSECONDS);
-        ci.scheduled = new Scheduled<>(ci, nano, TimeUnit.NANOSECONDS, this.ticker);
-        scheduleQueue.add(ci.scheduled);
+        scheduleQueue.add(ci);
     }
 
     @RunIn("backend")
     private void unSchedule(CacheItem ci) {
-        if (ci.scheduled != null) {
-            scheduleQueue.remove(ci.scheduled);
-            ci.scheduled = null;
-        }
+        scheduleQueue.remove(ci);
     }
 
     @RunIn("backend")
@@ -371,9 +367,7 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
     }
 
     private void afterRefresh(CacheItem ci) {
-        if (ci.scheduled != null) {
-            ci.scheduled.update(ci.expiration.expireAfterRefresh(TimeUnit.NANOSECONDS), TimeUnit.NANOSECONDS);
-        }
+        ci.updateDelay();
         long currentExpireAfterAccess = ci.expiration.expireAfterAccess(NANOSECONDS);
         if (ci.expireAfterAccess != currentExpireAfterAccess) {
             ci.expireAfterAccess = currentExpireAfterAccess;
@@ -404,7 +398,7 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         return this.isEvict;
     }
 
-    class CacheItem implements AccessOrder<CacheItem> {
+    class CacheItem implements AccessOrder<CacheItem>, Delayed {
 
         private ReentrantLock lock = new ReentrantLock();
 
@@ -412,7 +406,7 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         private final CacheLoader loader;
         private final Expiration expiration;
 
-        private Scheduled<CacheItem> scheduled;
+        private Scheduled scheduled;
         private WheelTimerNode<CacheItem> wheelTimerNode;
 
         private volatile Object value;
@@ -423,11 +417,12 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         private CacheItem next;
         private CacheItem prev;
 
-        CacheItem(String key, CacheLoader loader, Expiration expiration) {
+        CacheItem(String key, CacheLoader loader, Expiration expiration, Ticker ticker) {
             this.loader = loader;
             this.expiration = expiration;
             this.key = key;
             if (expiration != null) {
+                this.scheduled = new Scheduled(expiration.expireAfterRefresh(NANOSECONDS), ticker);
                 this.expireAfterAccess = expiration.expireAfterAccess(NANOSECONDS);
             }
         }
@@ -479,6 +474,8 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
             return f;
         }
 
+        /*-------------------------access order-----------------------------------------*/
+
         @Override
         public CacheItem getNext() {
             return this.next;
@@ -495,11 +492,31 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         public void setPrev(CacheItem prev) {
             this.prev = prev;
         }
+
+        /*-------------------------scheduled-----------------------------------------*/
+
+        @Override
+        public long getDelay(TimeUnit unit) {
+            return this.scheduled.getDelay(unit);
+        }
+
+        @Override
+        public int compareTo(Delayed o) {
+            return this.scheduled.compareTo(o);
+        }
+
+        public void resetDelay() {
+            this.scheduled.reset();
+        }
+
+        public void updateDelay() {
+            this.scheduled.update(expiration.expireAfterRefresh(NANOSECONDS));
+        }
     }
 
     private class AccessLinkedList extends AccessList<CacheItem> {
 
-        private CacheItem head = new CacheItem(null, null, null);
+        private CacheItem head = new CacheItem(null, null, null, null);
 
         AccessLinkedList() {
             head.setNext(head);
@@ -592,15 +609,14 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
 
         @RunIn("backend")
         void doScheduleWork() {
-            Scheduled<CacheItem> scheduled;
-            if ((scheduled = getScheduled()) != null) {
-                CacheItem ci = scheduled.getValue();
+            CacheItem ci;
+            if ((ci = getScheduled()) != null) {
                 if (ci.loader == null) {
                     doRemove(ci.key, RemovalCause.EXPIRE_AFTER_WRITE);
                     return;
                 }
                 doRefresh(ci);
-                rescheduleWork(scheduled);
+                reschedule(ci);
             }
         }
 
@@ -645,25 +661,21 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         @RunIn("backend")
         void peekTaskAndWait() {
             long delayNanos = 0;
-            Scheduled<CacheItem> sc = scheduleQueue.peek();
-            if (sc == null) {
+            CacheItem ci = scheduleQueue.peek();
+            if (ci == null) {
                 park();
-            } else if ((delayNanos = sc.getDelay(NANOSECONDS)) > MIN_DELAYED_NANO) {
+            } else if ((delayNanos = ci.getDelay(NANOSECONDS)) > MIN_DELAYED_NANO) {
                 park(delayNanos);
             }
         }
 
-        /**
-         * reschedule if needed
-         */
-        private void rescheduleWork(Scheduled<CacheItem> work) {
-            // reschedule
-            work.reset();
-            scheduleQueue.add(work);
+        private void reschedule(CacheItem ci) {
+            ci.resetDelay();
+            scheduleQueue.add(ci);
         }
 
-        private Scheduled<CacheItem> getScheduled() {
-            Scheduled<CacheItem> sc = scheduleQueue.peek();
+        private CacheItem getScheduled() {
+            CacheItem sc = scheduleQueue.peek();
             if (sc != null && sc.getDelay(NANOSECONDS) <= MIN_DELAYED_NANO) {
                 return scheduleQueue.poll();
             }
