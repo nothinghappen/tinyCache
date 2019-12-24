@@ -5,22 +5,16 @@ import java.util.concurrent.TimeUnit;
 
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
-public class Scheduled<T> implements Delayed {
+public class Scheduled implements Delayed {
 
     private long deadline;
     private long delayNanos;
-    private final T value;
     private final Ticker ticker;
 
-    public Scheduled(T value, long duration, TimeUnit timeUnit, Ticker ticker) {
+    public Scheduled(long delayNanos, Ticker ticker) {
         this.ticker = ticker;
-        this.delayNanos = timeUnit.toNanos(negativeFree(duration));
+        this.delayNanos = negativeFree(delayNanos);
         this.deadline = overflowFree(this.delayNanos, now());
-        this.value = value;
-    }
-
-    public T getValue() {
-        return value;
     }
 
     public void reset() {
@@ -33,8 +27,8 @@ public class Scheduled<T> implements Delayed {
     }
 
 
-    public void update(long duration, TimeUnit timeUnit) {
-        this.delayNanos = timeUnit.toNanos(negativeFree(duration));
+    public void update(long delayNanos) {
+        this.delayNanos = negativeFree(delayNanos);
     }
 
     @Override
