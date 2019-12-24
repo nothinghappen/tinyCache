@@ -12,7 +12,7 @@ public class CacheBuilder {
         return new CacheBuilder();
     }
 
-    private ExecutorService refreshBackend = new ThreadPoolExecutor(3,
+    private Executor refreshBackend = new ThreadPoolExecutor(3,
             3,
             60,
             TimeUnit.SECONDS,
@@ -21,6 +21,8 @@ public class CacheBuilder {
     private int capacity = 0;
 
     private AdvancedOption advancedOption = new AdvancedOption();
+
+    private ListenerChain chain = new ListenerChain();
 
     public CacheBuilder advancedOption(AdvancedOption advancedOption) {
         this.advancedOption = advancedOption;
@@ -31,13 +33,20 @@ public class CacheBuilder {
         return this;
     }
 
-    public CacheBuilder setRefreshBackend(ExecutorService refreshBackend) {
+    public CacheBuilder setRefreshBackend(Executor refreshBackend) {
         this.refreshBackend = refreshBackend;
         return this;
     }
 
+    public CacheBuilder registerListener(Listener listener) {
+        chain.register(listener);
+        return this;
+    }
+
     public CacheImpl build() {
-        return new CacheImpl(capacity, refreshBackend, advancedOption);
+        CacheImpl cache =  new CacheImpl(capacity, refreshBackend, advancedOption, chain);
+        cache.startBackendThread();
+        return cache;
     }
 
 }

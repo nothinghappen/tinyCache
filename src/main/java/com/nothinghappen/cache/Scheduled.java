@@ -14,7 +14,7 @@ public class Scheduled<T> implements Delayed {
 
     public Scheduled(T value, long duration, TimeUnit timeUnit, Ticker ticker) {
         this.ticker = ticker;
-        this.delayNanos = duration < 0 ? 0 : timeUnit.toNanos(duration);
+        this.delayNanos = timeUnit.toNanos(negativeFree(duration));
         this.deadline = overflowFree(this.delayNanos, now());
         this.value = value;
     }
@@ -34,7 +34,7 @@ public class Scheduled<T> implements Delayed {
 
 
     public void update(long duration, TimeUnit timeUnit) {
-        this.delayNanos = timeUnit.toNanos(duration);
+        this.delayNanos = timeUnit.toNanos(negativeFree(duration));
     }
 
     @Override
@@ -58,5 +58,14 @@ public class Scheduled<T> implements Delayed {
             return Long.MAX_VALUE;
         }
         return delayNanos + now;
+    }
+
+    /**
+     * Long.MAX_VALUE if value <= 0
+     * @param value
+     * @return
+     */
+    private long negativeFree(long value) {
+        return value <= 0 ? Long.MAX_VALUE : value;
     }
 }

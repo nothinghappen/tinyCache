@@ -1,6 +1,7 @@
 package com.nothinghappen.cache.base;
 
 import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
@@ -32,6 +33,21 @@ public class ConcurrentTest {
                 } catch (Exception e) {
                 }
                 run.run();
+            });
+        }
+        return futures;
+    }
+
+    public static <T> Future<T>[] supplyAsync(int threadNums, Callable<T> callable) {
+        CyclicBarrier cb = new CyclicBarrier(threadNums);
+        Future<T>[] futures = new Future[threadNums];
+        for (int i = 0; i < threadNums; i++) {
+            futures[i] = executor.submit(() -> {
+                try {
+                    cb.await();
+                } catch (Exception e) {
+                }
+                return callable.call();
             });
         }
         return futures;

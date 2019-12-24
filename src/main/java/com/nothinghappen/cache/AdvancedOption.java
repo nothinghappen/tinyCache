@@ -6,6 +6,8 @@ class AdvancedOption {
 
     private int timeWheelPower = 10;
 
+    private Ticker cacheTicker = Tickers.NANO;
+
     public AdvancedOption setTimeWheelTicker(Ticker timeWheelTicker) {
         this.timeWheelTicker = timeWheelTicker;
         return this;
@@ -16,11 +18,20 @@ class AdvancedOption {
         return this;
     }
 
+    public AdvancedOption setCacheTicker(Ticker cacheTicker) {
+        this.cacheTicker = cacheTicker;
+        return this;
+    }
+
     int getTimeWheelPower() {
         return timeWheelPower;
     }
 
     Ticker getTimeWheelTicker() {
         return timeWheelTicker;
+    }
+
+    Ticker getCacheTicker() {
+        return cacheTicker;
     }
 }

@@ -1,6 +1,5 @@
 import com.nothinghappen.cache.Cache;
 import com.nothinghappen.cache.CacheBuilder;
-import com.nothinghappen.cache.CacheImpl;
 import com.nothinghappen.cache.CacheLoader;
 import com.nothinghappen.cache.Ticker;
 import com.nothinghappen.cache.Tickers;
@@ -17,7 +16,7 @@ import java.util.concurrent.TimeUnit;
 public class Main {
 
     private static ExecutorService es = Executors.newFixedThreadPool(100);
-    private static CacheImpl ci;
+    private static Cache ci;
     private static String s;
     private static int RANDOM = 10000;
 

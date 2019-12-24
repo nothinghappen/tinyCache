@@ -1,4 +1,4 @@
-package com.nothinghappen.cache;
+package com.nothinghappen.cache.datastruct;
 
 import com.nothinghappen.cache.base.ConcurrentTest;
 import com.nothinghappen.cache.datastruct.RingBuffer;
@@ -13,11 +13,11 @@ public class RingBufferTest {
     @Test
     public void  test() {
         RingBuffer<String> rb = new RingBuffer<>(2);
-        Assert.assertEquals(true, rb.offer("hello1"));
-        Assert.assertEquals(true, rb.offer("hello2"));
-        Assert.assertEquals(true, rb.offer("hello3"));
-        Assert.assertEquals(true, rb.offer("hello4"));
-        Assert.assertEquals(false, rb.offer("hello5"));
+        Assert.assertTrue(rb.offer("hello1"));
+        Assert.assertTrue(rb.offer("hello2"));
+        Assert.assertTrue(rb.offer("hello3"));
+        Assert.assertTrue(rb.offer("hello4"));
+        Assert.assertFalse(rb.offer("hello5"));
         Assert.assertEquals("hello1", rb.poll());
         Assert.assertEquals("hello2", rb.poll());
         Assert.assertEquals("hello3", rb.poll());
@@ -50,7 +50,9 @@ public class RingBufferTest {
         Thread.sleep(3000);
         offerFlag.set(false);
         //drain buffer
-        Thread.sleep(1000);
+        while (ringBuffer.size() != 0) {
+            Thread.yield();
+        }
         pollFlag.set(false);
         Assert.assertEquals(offer.get(), poll.get());
     }

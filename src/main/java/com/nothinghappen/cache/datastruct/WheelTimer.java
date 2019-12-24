@@ -8,7 +8,7 @@ public class WheelTimer<T> {
     private long currentTicks;
     private int currentIdx;
 
-    private WheelTimerConsumer<T, WheelTimer<T>, Long> consumer;
+    private WheelTimerConsumer<T> consumer;
 
     private WheelTimerNode<T>[] buckets;
 
@@ -22,7 +22,7 @@ public class WheelTimer<T> {
      * @param biConsumer
      * @param nowTicks
      */
-    public WheelTimer(int power, WheelTimerConsumer<T, WheelTimer<T>, Long> biConsumer, long nowTicks) {
+    public WheelTimer(int power, WheelTimerConsumer<T> biConsumer, long nowTicks) {
         if (power < 0) {
             power = 0;
         }
@@ -32,7 +32,7 @@ public class WheelTimer<T> {
         this.init(1 << power, biConsumer, nowTicks, null, 1);
     }
 
-    public WheelTimer(int bucket_size, WheelTimerConsumer<T, WheelTimer<T>, Long> biConsumer, long nowTicks, WheelTimer<T> root, long interval) {
+    public WheelTimer(int bucket_size, WheelTimerConsumer<T> biConsumer, long nowTicks, WheelTimer<T> root, long interval) {
         this.init(bucket_size, biConsumer, nowTicks, root, interval);
     }
 
@@ -76,7 +76,7 @@ public class WheelTimer<T> {
         }
     }
 
-    private void init(int bucket_size, WheelTimerConsumer<T, WheelTimer<T>, Long> consumer, long nowTicks, WheelTimer<T> root, long interval) {
+    private void init(int bucket_size, WheelTimerConsumer<T> consumer, long nowTicks, WheelTimer<T> root, long interval) {
         this.bucket_size = bucket_size;
         this.mask = bucket_size - 1;
         this.buckets = new WheelTimerNode[bucket_size];
