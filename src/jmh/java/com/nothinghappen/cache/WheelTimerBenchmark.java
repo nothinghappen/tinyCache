@@ -45,7 +45,7 @@ public class WheelTimerBenchmark {
 
         integer = delay;
         for (int i = 0; i < CAPACITY; i++) {
-            wheelTimerNodes[i] = timewheel.add("hello world", delay);
+            wheelTimerNodes[i] = timewheel.add("hello world", i);
             treeSet.add(i);
         }
     }
@@ -55,7 +55,7 @@ public class WheelTimerBenchmark {
         timewheel.reschedule(wheelTimerNodes[delay], delay);
     }
 
-    @Benchmark
+    //@Benchmark
     public void treeSet() {
         treeSet.remove(integer);
         treeSet.add(integer);

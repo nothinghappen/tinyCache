@@ -19,27 +19,27 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
 
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
-public class CacheImpl implements Cache {
+class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(CacheImpl.class);
 
-    Ticker ticker = Tickers.NANO;
-
-    Ticker timeWheelTicker;
-
     final long MIN_DELAYED_NANO = NANOSECONDS.convert(5, TimeUnit.MILLISECONDS);
 
-    final long READ_EVENT_INTERNAL = ticker.convert(1000, TimeUnit.MILLISECONDS);
+    final Ticker ticker;
+
+    final Ticker timeWheelTicker;
+
+    final long READ_EVENT_INTERVAL;
 
     final Buffer<Runnable> userEventBuffer = new UnboundedBuffer<>();
 
@@ -51,7 +51,7 @@ public class CacheImpl implements Cache {
 
     final BackendThread backend;
 
-    final ExecutorService refreshBackend;
+    final Executor refreshBackend;
 
     final boolean isEvict;
 
@@ -59,36 +59,13 @@ public class CacheImpl implements Cache {
 
     final WheelTimer<CacheItem> timeWheel;
 
-    ConcurrentMap<String, CacheItem> data = new ConcurrentHashMap<>();
+    final AtomicInteger size = new AtomicInteger();
 
-    private WheelTimerConsumer<CacheItem, WheelTimer<CacheItem>, Long> expireAfterAccessConsumer =
-            (ci, timeWheel, delta) -> {
-                long currentExpireAfterAccessNanos = ci.expiration.expireAfterAccess(NANOSECONDS);
-                if (currentExpireAfterAccessNanos != ci.expireAfterAccess) {
+    final ConcurrentMap<String, CacheItem> data = new ConcurrentHashMap<>();
 
-                    if (currentExpireAfterAccessNanos <= 0) {
-                        ci.expireAfterAccess = currentExpireAfterAccessNanos;
-                        ci.wheelTimerNode = null;
-                        return;
-                    }
+    final Listener listenerChain;
 
-                    // expireAfterAccess has been changed
-                    long currentExpireAfterAccessTicks =
-                            timeWheelTicker.convert(currentExpireAfterAccessNanos, NANOSECONDS);
-                    long expireAfterAccessTicks = timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS);
-                    long nowTicks = timeWheelTicker.read();
-                    long rescheduleTicks = currentExpireAfterAccessTicks - expireAfterAccessTicks + delta;
-                    if (rescheduleTicks > 0) {
-                        // still alive , according to new value of expireAfterAccess
-                        ci.wheelTimerNode = timeWheel.add(ci, nowTicks + rescheduleTicks);
-                        ci.expireAfterAccess = currentExpireAfterAccessNanos;
-                        return;
-                    }
-                }
-                doRemove(ci.key);
-            };
-
-    CacheImpl(int capacity, ExecutorService refreshBackend, AdvancedOption advancedOption) {
+    CacheImpl(int capacity, Executor refreshBackend, AdvancedOption advancedOption, ListenerChain chain) {
         if (capacity > 0) {
             this.capacity = capacity;
             this.isEvict = true;
@@ -98,9 +75,11 @@ public class CacheImpl implements Cache {
         }
         this.refreshBackend = refreshBackend;
         this.timeWheelTicker = advancedOption.getTimeWheelTicker();
-        this.timeWheel =
-                new WheelTimer<>(advancedOption.getTimeWheelPower(), expireAfterAccessConsumer, timeWheelTicker.read());
+        this.timeWheel = new WheelTimer<>(advancedOption.getTimeWheelPower(), this, timeWheelTicker.read());
+        this.ticker = advancedOption.getCacheTicker();
+        this.READ_EVENT_INTERVAL = ticker.convert(1000, TimeUnit.MILLISECONDS);
         this.backend = new BackendThread();
+        this.listenerChain = chain;
     }
 
     @Override
@@ -149,7 +128,7 @@ public class CacheImpl implements Cache {
     @Override
     public Future<Void> removeAsync(String key) {
         requireNonNull(key);
-        return CompletableFuture.runAsync(() -> doRemove(key), backend);
+        return CompletableFuture.runAsync(() -> doRemove(key, RemovalCause.USER_OPERATION), backend);
     }
 
     @Override
@@ -222,7 +201,45 @@ public class CacheImpl implements Cache {
 
     @Override
     public int size() {
-        return data.size();
+        return size.intValue();
+    }
+
+    void startBackendThread() {
+        this.backend.start();
+    }
+
+    void stopBackendThread() {
+        this.backend.stop();
+    }
+
+    /**
+     * WheelTimerConsumer implement
+     */
+    @Override
+    public void accept(CacheItem ci, WheelTimer<CacheItem> wheel, long delta) {
+        long currentExpireAfterAccessNanos = ci.expiration.expireAfterAccess(NANOSECONDS);
+        if (currentExpireAfterAccessNanos != ci.expireAfterAccess) {
+
+            if (currentExpireAfterAccessNanos <= 0) {
+                ci.expireAfterAccess = currentExpireAfterAccessNanos;
+                ci.wheelTimerNode = null;
+                return;
+            }
+
+            // expireAfterAccess has been changed
+            long currentExpireAfterAccessTicks =
+                    timeWheelTicker.convert(currentExpireAfterAccessNanos, NANOSECONDS);
+            long expireAfterAccessTicks = timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS);
+            long nowTicks = timeWheelTicker.read();
+            long rescheduleTicks = currentExpireAfterAccessTicks - expireAfterAccessTicks + delta;
+            if (rescheduleTicks > 0) {
+                // still alive , according to new value of expireAfterAccess
+                ci.wheelTimerNode = timeWheel.add(ci, nowTicks + rescheduleTicks);
+                ci.expireAfterAccess = currentExpireAfterAccessNanos;
+                return;
+            }
+        }
+        doRemove(ci.key, RemovalCause.EXPIRE_AFTER_ACCESS);
     }
 
     @RunIn("backend")
@@ -241,7 +258,7 @@ public class CacheImpl implements Cache {
     private void doAdd(String key, Object value, Expiration expiration) {
         CacheItem existing = data.get(key);
         if (existing != null) {
-            doRemove(key);
+            doRemove(key, RemovalCause.ADD);
         }
         CacheItem ci = new CacheItem(key, null, expiration);
         ci.value = value;
@@ -250,13 +267,13 @@ public class CacheImpl implements Cache {
     }
 
     @RunIn("backend")
-    private void doRemove(String key) {
+    private void doRemove(String key, RemovalCause cause) {
         CacheItem ci = data.get(key);
         if (ci == null) {
             return;
         }
         data.remove(key);
-        afterRemove(ci);
+        afterRemove(ci, cause);
     }
 
     @RunIn("backend")
@@ -265,7 +282,14 @@ public class CacheImpl implements Cache {
         if (ci == null) {
             return CompletableFuture.completedFuture(null);
         }
-        return ci.refreshAsync();
+        return doRefresh(ci);
+    }
+
+    @RunIn("backend")
+    private Future<Void> doRefresh(CacheItem ci) {
+        Future<Void> f = ci.refreshAsync();
+        afterRefresh(ci);
+        return f;
     }
 
     @RunIn("backend")
@@ -316,10 +340,12 @@ public class CacheImpl implements Cache {
         if (isExpireAfterAccess(ci)) {
             scheduleInTimeWheel(ci);
         }
+        size.incrementAndGet();
+        listenerChain.onWrite(ci.key);
     }
 
     @RunIn("backend")
-    private void afterRemove(CacheItem ci) {
+    private void afterRemove(CacheItem ci, RemovalCause cause) {
         unSchedule(ci);
         if (isEvict()) {
             accessList.remove(ci);
@@ -327,18 +353,41 @@ public class CacheImpl implements Cache {
         if (isExpireAfterAccess(ci)) {
             unScheduleInTimeWheel(ci);
         }
+        size.decrementAndGet();
+        listenerChain.onRemove(ci.key, ci.value, cause);
     }
 
     private void afterRead(CacheItem ci) {
         if (isEvict() || isExpireAfterAccess(ci)) {
             long now = ticker.read();
             long lastAccessTime = ci.lastAccessTime.get();
-            if (now - lastAccessTime > READ_EVENT_INTERNAL
+            if (now - lastAccessTime > READ_EVENT_INTERVAL
                     && ci.lastAccessTime.compareAndSet(lastAccessTime, now) // avoiding too much read event
                     && readBuffer.offer(ci)) {
                 backend.unpark();
             }
         }
+        listenerChain.onRead(ci.key);
+    }
+
+    private void afterRefresh(CacheItem ci) {
+        if (ci.scheduled != null) {
+            ci.scheduled.update(ci.expiration.expireAfterRefresh(TimeUnit.NANOSECONDS), TimeUnit.NANOSECONDS);
+        }
+        long currentExpireAfterAccess = ci.expiration.expireAfterAccess(NANOSECONDS);
+        if (ci.expireAfterAccess != currentExpireAfterAccess) {
+            ci.expireAfterAccess = currentExpireAfterAccess;
+            if (currentExpireAfterAccess <= 0) {
+                unScheduleInTimeWheel(ci);
+            } else {
+                if (ci.wheelTimerNode != null) {
+                    accessInTimeWheel(ci);
+                } else {
+                    scheduleInTimeWheel(ci);
+                }
+            }
+        }
+        listenerChain.onRefresh(ci.key);
     }
 
     private boolean isExpireAfterAccess(CacheItem ci) {
@@ -355,7 +404,7 @@ public class CacheImpl implements Cache {
         return this.isEvict;
     }
 
-    private class CacheItem implements AccessOrder<CacheItem> {
+    class CacheItem implements AccessOrder<CacheItem> {
 
         private ReentrantLock lock = new ReentrantLock();
 
@@ -366,7 +415,7 @@ public class CacheImpl implements Cache {
         private Scheduled<CacheItem> scheduled;
         private WheelTimerNode<CacheItem> wheelTimerNode;
 
-        private Object value;
+        private volatile Object value;
 
         private AtomicLong lastAccessTime = new AtomicLong();
         private long expireAfterAccess;
@@ -388,31 +437,37 @@ public class CacheImpl implements Cache {
         }
 
         @RunIn({"customer", "refreshBackend"})
-        void doRefresh() {
-            this.value = loader.load(key, value);
-        }
-
-        void load() {
-            if (this.value != null) {
-                // load completed
-                return;
-            }
+        private void doRefresh() {
             try {
-                lock.lock();
-                if (this.value == null) {
-                    doRefresh();
+                if(this.loader == null) {
+                    return;
                 }
+                Object newValue = loader.load(key, value);
+                if (newValue == null) {
+                    return;
+                }
+                this.value = newValue;
             } catch (Exception ex) {
-                LOGGER.error("CacheItem load", ex);
-            } finally {
-                lock.unlock();
+                LOGGER.error("doRefresh", ex);
             }
         }
 
-        Future<Void> refreshAsync() {
+        private void load() {
+            if (this.value == null) {
+                try {
+                    lock.lock();
+                    if (this.value == null) {
+                        doRefresh();
+                    }
+                } finally {
+                    lock.unlock();
+                }
+            }
+        }
+
+        private Future<Void> refreshAsync() {
             Future<Void> f = CompletableFuture.completedFuture(null);
             if (loader == null) {
-                doRemove(this.key);
                 return f;
             }
             // doRefresh
@@ -421,27 +476,7 @@ public class CacheImpl implements Cache {
             } catch (RejectedExecutionException ex) {
                 LOGGER.error("refreshAsync rejected", ex);
             }
-            afterRefresh();
             return f;
-        }
-
-        private void afterRefresh() {
-            if (this.scheduled != null) {
-                this.scheduled.update(this.expiration.expireAfterRefresh(TimeUnit.NANOSECONDS), TimeUnit.NANOSECONDS);
-            }
-            long currentExpireAfterAccess = expiration.expireAfterAccess(NANOSECONDS);
-            if (this.expireAfterAccess != currentExpireAfterAccess) {
-                this.expireAfterAccess = currentExpireAfterAccess;
-                if (currentExpireAfterAccess <= 0) {
-                    unScheduleInTimeWheel(this);
-                } else {
-                    if (this.wheelTimerNode != null) {
-                        accessInTimeWheel(this);
-                    } else {
-                        scheduleInTimeWheel(this);
-                    }
-                }
-            }
         }
 
         @Override
@@ -461,7 +496,6 @@ public class CacheImpl implements Cache {
             this.prev = prev;
         }
     }
-
 
     private class AccessLinkedList extends AccessList<CacheItem> {
 
@@ -501,20 +535,27 @@ public class CacheImpl implements Cache {
 
     }
 
-
     class BackendThread implements Executor, Runnable {
 
-        boolean running = true;
+        private volatile boolean running = true;
 
         /**
          * backend thread
          */
-        final Thread thread;
+        private final Thread thread;
 
         BackendThread() {
             this.thread = new Thread(this);
             this.thread.setDaemon(true);
+        }
+
+        void start() {
             this.thread.start();
+        }
+
+        void stop() {
+            this.running = false;
+            unpark();
         }
 
         @Override
@@ -529,20 +570,6 @@ public class CacheImpl implements Cache {
         public void execute(Runnable command) {
             userEventBuffer.offer(command);
             unpark();
-        }
-
-        @RunIn("backend")
-        void park(long nanos) {
-            LockSupport.parkNanos(nanos);
-        }
-
-        @RunIn("backend")
-        void park() {
-            LockSupport.park();
-        }
-
-        void unpark() {
-            LockSupport.unpark(this.thread);
         }
 
         @RunIn("backend")
@@ -563,11 +590,16 @@ public class CacheImpl implements Cache {
             }
         }
 
+        @RunIn("backend")
         void doScheduleWork() {
             Scheduled<CacheItem> scheduled;
             if ((scheduled = getScheduled()) != null) {
                 CacheItem ci = scheduled.getValue();
-                ci.refreshAsync();
+                if (ci.loader == null) {
+                    doRemove(ci.key, RemovalCause.EXPIRE_AFTER_WRITE);
+                    return;
+                }
+                doRefresh(ci);
                 rescheduleWork(scheduled);
             }
         }
@@ -598,7 +630,7 @@ public class CacheImpl implements Cache {
                 CacheItem victim = accessList.head().getPrev();
                 while (size > capacity && victim != null) {
                     CacheItem nextVictim = victim.getPrev();
-                    doRemove(victim.key);
+                    doRemove(victim.key, RemovalCause.EVICT);
                     victim = nextVictim;
                     size--;
                 }
@@ -610,23 +642,7 @@ public class CacheImpl implements Cache {
             timeWheel.advance(timeWheelTicker.read());
         }
 
-        /**
-         * reschedule if needed
-         */
-        void rescheduleWork(Scheduled<CacheItem> work) {
-            // reschedule
-            work.reset();
-            scheduleQueue.add(work);
-        }
-
-        Scheduled<CacheItem> getScheduled() {
-            Scheduled<CacheItem> sc = scheduleQueue.peek();
-            if (sc != null && sc.getDelay(NANOSECONDS) <= MIN_DELAYED_NANO) {
-                return scheduleQueue.poll();
-            }
-            return null;
-        }
-
+        @RunIn("backend")
         void peekTaskAndWait() {
             long delayNanos = 0;
             Scheduled<CacheItem> sc = scheduleQueue.peek();
@@ -635,6 +651,37 @@ public class CacheImpl implements Cache {
             } else if ((delayNanos = sc.getDelay(NANOSECONDS)) > MIN_DELAYED_NANO) {
                 park(delayNanos);
             }
+        }
+
+        /**
+         * reschedule if needed
+         */
+        private void rescheduleWork(Scheduled<CacheItem> work) {
+            // reschedule
+            work.reset();
+            scheduleQueue.add(work);
+        }
+
+        private Scheduled<CacheItem> getScheduled() {
+            Scheduled<CacheItem> sc = scheduleQueue.peek();
+            if (sc != null && sc.getDelay(NANOSECONDS) <= MIN_DELAYED_NANO) {
+                return scheduleQueue.poll();
+            }
+            return null;
+        }
+
+        @RunIn("backend")
+        private void park(long nanos) {
+            LockSupport.parkNanos(nanos);
+        }
+
+        @RunIn("backend")
+        private void park() {
+            LockSupport.park();
+        }
+
+        private void unpark() {
+            LockSupport.unpark(this.thread);
         }
     }
 }

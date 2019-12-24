@@ -1,7 +1,7 @@
 package com.nothinghappen.cache.datastruct;
 
-public interface WheelTimerConsumer<T, W, D> {
+public interface WheelTimerConsumer<T> {
 
-    void accept(T value, W wheel, D deltaTicks);
+    void accept(T value, WheelTimer<T> wheel, long deltaTicks);
 
 }
