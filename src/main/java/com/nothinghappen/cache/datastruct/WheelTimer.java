@@ -1,6 +1,6 @@
 package com.nothinghappen.cache.datastruct;
 
-public class WheelTimer<T> {
+public class WheelTimer {
 
     private int bucket_size = 16;
     private int mask = 15;
@@ -8,55 +8,38 @@ public class WheelTimer<T> {
     private long currentTicks;
     private int currentIdx;
 
-    private WheelTimerConsumer<T> consumer;
+    private WheelTimerTask[] buckets;
 
-    private WheelTimerNode<T>[] buckets;
-
-    private WheelTimer<T> overflow;
-    private WheelTimer<T> root;
-
+    private WheelTimer overflow;
+    private WheelTimer root;
 
     /**
      * bucket_size = 2 ^ power
-     * @param power
-     * @param biConsumer
-     * @param nowTicks
      */
-    public WheelTimer(int power, WheelTimerConsumer<T> biConsumer, long nowTicks) {
+    public WheelTimer(int power, long nowTicks) {
         if (power < 0) {
             power = 0;
         }
         if (power > 30) {
             power = 30;
         }
-        this.init(1 << power, biConsumer, nowTicks, null, 1);
+        this.init(1 << power, nowTicks, null, 1);
     }
 
-    public WheelTimer(int bucket_size, WheelTimerConsumer<T> biConsumer, long nowTicks, WheelTimer<T> root, long interval) {
-        this.init(bucket_size, biConsumer, nowTicks, root, interval);
+    private WheelTimer(int bucket_size, long nowTicks, WheelTimer root, long interval) {
+        this.init(bucket_size, nowTicks, root, interval);
     }
 
-    public WheelTimerNode<T> add(T t, long deadline) {
-        WheelTimerNode<T> head = findBucket(deadline);
-        WheelTimerNode<T> newWheelTimerNode = new WheelTimerNode<>(t, deadline);
-        link(head, newWheelTimerNode);
-        return newWheelTimerNode;
+
+    public void schedule(WheelTimerTask t, long deadline) {
+        unschedule(t);
+        WheelTimerTask head = findBucket(deadline);
+        t.setDeadline(deadline);
+        link(head, t);
     }
 
-    /**
-     * reschedule a existed wheelTimerNode
-     * @param wheelTimerNode
-     * @param deadline
-     */
-    public void reschedule(WheelTimerNode<T> wheelTimerNode, long deadline) {
-        unlinked(wheelTimerNode);
-        wheelTimerNode.setDeadline(deadline);
-        WheelTimerNode<T> head = findBucket(deadline);
-        link(head, wheelTimerNode);
-    }
-
-    public void unSchedule(WheelTimerNode<T> wheelTimerNode) {
-        unlinked(wheelTimerNode);
+    public void unschedule(WheelTimerTask timerNode) {
+        unlinked(timerNode);
     }
 
     public void advance(long nowTicks) {
@@ -76,11 +59,10 @@ public class WheelTimer<T> {
         }
     }
 
-    private void init(int bucket_size, WheelTimerConsumer<T> consumer, long nowTicks, WheelTimer<T> root, long interval) {
+    private void init(int bucket_size, long nowTicks, WheelTimer root, long interval) {
         this.bucket_size = bucket_size;
         this.mask = bucket_size - 1;
-        this.buckets = new WheelTimerNode[bucket_size];
-        this.consumer = consumer;
+        this.buckets = new WheelTimerTask[bucket_size];
         this.currentTicks = nowTicks;
         this.root = root;
         this.ticks_interval = interval;
@@ -89,38 +71,38 @@ public class WheelTimer<T> {
         }
     }
 
-    private WheelTimerNode<T> createDummy() {
-        WheelTimerNode<T> wheelTimerNode = new WheelTimerNode<>(null, 0);
-        wheelTimerNode.setNext(wheelTimerNode);
-        wheelTimerNode.setPrev(wheelTimerNode);
-        return wheelTimerNode;
+    private WheelTimerTask createDummy() {
+        WheelTimerTask timerNode = new DummyWheelTimerTask();
+        timerNode.setNextTask(timerNode);
+        timerNode.setPrevTask(timerNode);
+        return timerNode;
     }
 
-    private void link(WheelTimerNode<T> head, WheelTimerNode<T> wheelTimerNode) {
-        WheelTimerNode<T> prev = head.getPrev();
-        prev.setNext(wheelTimerNode);
-        wheelTimerNode.setPrev(prev);
-        wheelTimerNode.setNext(head);
-        head.setPrev(wheelTimerNode);
+    private void link(WheelTimerTask head, WheelTimerTask timerNode) {
+        WheelTimerTask prev = head.getPrevTask();
+        prev.setNextTask(timerNode);
+        timerNode.setPrevTask(prev);
+        timerNode.setNextTask(head);
+        head.setPrevTask(timerNode);
     }
 
-    private void unlinked(WheelTimerNode<T> wheelTimerNode) {
-        if (isUnlinked(wheelTimerNode)) {
+    private void unlinked(WheelTimerTask timerNode) {
+        if (isUnlinked(timerNode)) {
             return;
         }
-        WheelTimerNode<T> next = wheelTimerNode.getNext();
-        WheelTimerNode<T> prev = wheelTimerNode.getPrev();
-        next.setPrev(prev);
-        prev.setNext(next);
-        wheelTimerNode.setNext(null);
-        wheelTimerNode.setPrev(null);
+        WheelTimerTask next = timerNode.getNextTask();
+        WheelTimerTask prev = timerNode.getPrevTask();
+        next.setPrevTask(prev);
+        prev.setNextTask(next);
+        timerNode.setNextTask(null);
+        timerNode.setPrevTask(null);
     }
 
-    private boolean isUnlinked(WheelTimerNode<T> wheelTimerNode) {
-        return wheelTimerNode.getNext() == null || wheelTimerNode.getPrev() == null;
+    private boolean isUnlinked(WheelTimerTask timerNode) {
+        return timerNode.getNextTask() == null || timerNode.getPrevTask() == null;
     }
 
-    private WheelTimerNode<T> doFindBucket(long deadline) {
+    private WheelTimerTask doFindBucket(long deadline) {
         long n = (deadline - currentTicks) / ticks_interval;
         if (n <= 0) {
             n = 1;
@@ -133,15 +115,15 @@ public class WheelTimer<T> {
         }
     }
 
-    private WheelTimerNode<T> findBucket(long deadline) {
-        WheelTimerNode<T> head;
+    private WheelTimerTask findBucket(long deadline) {
+        WheelTimerTask head;
         if ((head = doFindBucket(deadline)) == null) {
             head = overFlow().findBucket(deadline);
         }
         return head;
     }
 
-    private WheelTimer<T> root() {
+    private WheelTimer root() {
         return this.root == null ? this : this.root;
     }
 
@@ -149,10 +131,9 @@ public class WheelTimer<T> {
         return (index + n) & mask;
     }
 
-    private WheelTimer<T> overFlow() {
+    private WheelTimer overFlow() {
         if (this.overflow == null) {
-            this.overflow = new WheelTimer<>(bucket_size,
-                    consumer,
+            this.overflow = new WheelTimer(bucket_size,
                     currentTicks,
                     root(),
                     ticks_interval * bucket_size);
@@ -160,18 +141,24 @@ public class WheelTimer<T> {
         return this.overflow;
     }
 
-    private void consume(WheelTimerNode<T> head, long nowTicks) {
-        WheelTimerNode<T> current = head.getNext();
+    private void consume(WheelTimerTask head, long nowTicks) {
+        WheelTimerTask current = head.getNextTask();
         while (current != head) {
-            WheelTimerNode<T> next = current.getNext();
+            WheelTimerTask next = current.getNextTask();
             unlinked(current);
             if (current.getDeadline() > nowTicks) {
                 // still alive
                 link(root().findBucket(current.getDeadline()), current);
             } else {
-                consumer.accept(current.getValue(), root(), current.getDeadline() - nowTicks);
+                current.run(current.getDeadline() - nowTicks);
             }
             current = next;
+        }
+    }
+
+    private static class DummyWheelTimerTask extends WheelTimerTask {
+        @Override
+        public void run(long deltaTicket) {
         }
     }
 }

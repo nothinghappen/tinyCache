@@ -1,10 +1,7 @@
 import com.nothinghappen.cache.Cache;
 import com.nothinghappen.cache.CacheBuilder;
 import com.nothinghappen.cache.CacheLoader;
-import com.nothinghappen.cache.Ticker;
-import com.nothinghappen.cache.Tickers;
-import com.nothinghappen.cache.datastruct.WheelTimer;
-import com.sun.javaws.IconUtil;
+
 
 import java.io.IOException;
 import java.util.concurrent.BrokenBarrierException;
