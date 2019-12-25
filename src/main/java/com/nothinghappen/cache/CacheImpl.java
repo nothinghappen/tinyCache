@@ -7,8 +7,7 @@ import com.nothinghappen.cache.datastruct.Buffer;
 import com.nothinghappen.cache.datastruct.RingBuffer;
 import com.nothinghappen.cache.datastruct.UnboundedBuffer;
 import com.nothinghappen.cache.datastruct.WheelTimer;
-import com.nothinghappen.cache.datastruct.WheelTimerConsumer;
-import com.nothinghappen.cache.datastruct.WheelTimerNode;
+import com.nothinghappen.cache.datastruct.WheelTimerTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,7 +29,7 @@ import java.util.concurrent.locks.ReentrantLock;
 
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
-class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
+class CacheImpl implements Cache {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(CacheImpl.class);
 
@@ -58,7 +57,7 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
 
     final int capacity;
 
-    final WheelTimer<CacheItem> timeWheel;
+    final WheelTimer timeWheel;
 
     final AtomicInteger size = new AtomicInteger();
 
@@ -76,7 +75,7 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         }
         this.refreshBackend = refreshBackend;
         this.timeWheelTicker = advancedOption.getTimeWheelTicker();
-        this.timeWheel = new WheelTimer<>(advancedOption.getTimeWheelPower(), this, timeWheelTicker.read());
+        this.timeWheel = new WheelTimer(advancedOption.getTimeWheelPower(), timeWheelTicker.read());
         this.ticker = advancedOption.getCacheTicker();
         this.READ_EVENT_INTERVAL = ticker.convert(1000, TimeUnit.MILLISECONDS);
         this.backend = new BackendThread();
@@ -213,36 +212,6 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         this.backend.stop();
     }
 
-    /**
-     * WheelTimerConsumer implement
-     */
-    @Override
-    public void accept(CacheItem ci, WheelTimer<CacheItem> wheel, long delta) {
-        long currentExpireAfterAccessNanos = ci.expiration.expireAfterAccess(NANOSECONDS);
-        if (currentExpireAfterAccessNanos != ci.expireAfterAccess) {
-
-            if (currentExpireAfterAccessNanos <= 0) {
-                ci.expireAfterAccess = currentExpireAfterAccessNanos;
-                ci.wheelTimerNode = null;
-                return;
-            }
-
-            // expireAfterAccess has been changed
-            long currentExpireAfterAccessTicks =
-                    timeWheelTicker.convert(currentExpireAfterAccessNanos, NANOSECONDS);
-            long expireAfterAccessTicks = timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS);
-            long nowTicks = timeWheelTicker.read();
-            long rescheduleTicks = currentExpireAfterAccessTicks - expireAfterAccessTicks + delta;
-            if (rescheduleTicks > 0) {
-                // still alive , according to new value of expireAfterAccess
-                ci.wheelTimerNode = timeWheel.add(ci, nowTicks + rescheduleTicks);
-                ci.expireAfterAccess = currentExpireAfterAccessNanos;
-                return;
-            }
-        }
-        doRemove(ci.key, RemovalCause.EXPIRE_AFTER_ACCESS);
-    }
-
     @RunIn("backend")
     private CacheItem doGetOrLoad(String key, CacheLoader loader, Expiration expiration) {
         CacheItem ci = data.get(key);
@@ -295,26 +264,18 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
 
     @RunIn("backend")
     private void scheduleInTimeWheel(CacheItem ci) {
-        ci.wheelTimerNode = timeWheel.add(
-                ci, timeWheelTicker.read() + timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS));
+        timeWheel.schedule(ci, timeWheelTicker.read() + timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS));
     }
 
     @RunIn("backend")
-    private void accessInTimeWheel(CacheItem ci) {
-        if (ci.wheelTimerNode == null) {
-            return;
-        }
-        timeWheel.reschedule(ci.wheelTimerNode,
+    private void rescheduleInTimeWheel(CacheItem ci) {
+        timeWheel.schedule(ci,
                 timeWheelTicker.read() + timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS));
     }
 
     @RunIn("backend")
     private void unScheduleInTimeWheel(CacheItem ci) {
-        if (ci.wheelTimerNode == null) {
-            return;
-        }
-        timeWheel.unSchedule(ci.wheelTimerNode);
-        ci.wheelTimerNode = null;
+        timeWheel.unschedule(ci);
     }
 
     @RunIn("backend")
@@ -374,11 +335,7 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
             if (currentExpireAfterAccess <= 0) {
                 unScheduleInTimeWheel(ci);
             } else {
-                if (ci.wheelTimerNode != null) {
-                    accessInTimeWheel(ci);
-                } else {
-                    scheduleInTimeWheel(ci);
-                }
+                rescheduleInTimeWheel(ci);
             }
         }
         listenerChain.onRefresh(ci.key);
@@ -398,7 +355,7 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         return this.isEvict;
     }
 
-    class CacheItem implements AccessOrder<CacheItem>, Delayed {
+    class CacheItem extends WheelTimerTask implements AccessOrder<CacheItem>, Delayed {
 
         private ReentrantLock lock = new ReentrantLock();
 
@@ -407,7 +364,6 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         private final Expiration expiration;
 
         private Scheduled scheduled;
-        private WheelTimerNode<CacheItem> wheelTimerNode;
 
         private volatile Object value;
 
@@ -434,7 +390,7 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         @RunIn({"customer", "refreshBackend"})
         private void doRefresh() {
             try {
-                if(this.loader == null) {
+                if (this.loader == null) {
                     return;
                 }
                 Object newValue = loader.load(key, value);
@@ -512,7 +468,36 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         public void updateDelay() {
             this.scheduled.update(expiration.expireAfterRefresh(NANOSECONDS));
         }
+
+        /*-------------------------WheelTimerTask-----------------------------------------*/
+
+        @Override
+        @RunIn("backend")
+        public void run(long delta) {
+            long currentExpireAfterAccessNanos = this.expiration.expireAfterAccess(NANOSECONDS);
+            if (currentExpireAfterAccessNanos != this.expireAfterAccess) {
+
+                if (currentExpireAfterAccessNanos <= 0) {
+                    this.expireAfterAccess = currentExpireAfterAccessNanos;
+                    return;
+                }
+                // expireAfterAccess has been changed
+                long currentExpireAfterAccessTicks =
+                        timeWheelTicker.convert(currentExpireAfterAccessNanos, NANOSECONDS);
+                long expireAfterAccessTicks = timeWheelTicker.convert(this.expireAfterAccess, NANOSECONDS);
+                long nowTicks = timeWheelTicker.read();
+                long rescheduleTicks = currentExpireAfterAccessTicks - expireAfterAccessTicks + delta;
+                if (rescheduleTicks > 0) {
+                    // still alive , according to new value of expireAfterAccess
+                    timeWheel.schedule(this, nowTicks + rescheduleTicks);
+                    this.expireAfterAccess = currentExpireAfterAccessNanos;
+                    return;
+                }
+            }
+            doRemove(this.key, RemovalCause.EXPIRE_AFTER_ACCESS);
+        }
     }
+
 
     private class AccessLinkedList extends AccessList<CacheItem> {
 
@@ -551,6 +536,7 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
         }
 
     }
+
 
     class BackendThread implements Executor, Runnable {
 
@@ -635,7 +621,7 @@ class CacheImpl implements Cache, WheelTimerConsumer<CacheImpl.CacheItem> {
                 accessList.access(ci);
             }
             if (isExpireAfterAccess(ci)) {
-                accessInTimeWheel(ci);
+                rescheduleInTimeWheel(ci);
             }
         }
 

@@ -1,7 +1,7 @@
 package com.nothinghappen.cache;
 
 import com.nothinghappen.cache.datastruct.WheelTimer;
-import com.nothinghappen.cache.datastruct.WheelTimerNode;
+import com.nothinghappen.cache.datastruct.WheelTimerTask;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -28,8 +28,8 @@ public class WheelTimerBenchmark {
 
     private final int CAPACITY = 10000;
     // size = 16
-    private WheelTimer<String> timewheel = new WheelTimer<>(4, (s, w, d) -> {}, 0);
-    private WheelTimerNode<String>[] wheelTimerNodes = new WheelTimerNode[CAPACITY];
+    private WheelTimer timewheel = new WheelTimer(4, 0);
+    private TestWheelTimerTask[] timerNodes = new TestWheelTimerTask[CAPACITY];
 
     private TreeSet<Integer> treeSet = new TreeSet<>();
     private Integer integer;
@@ -45,19 +45,28 @@ public class WheelTimerBenchmark {
 
         integer = delay;
         for (int i = 0; i < CAPACITY; i++) {
-            wheelTimerNodes[i] = timewheel.add("hello world", i);
+            timerNodes[i] = new TestWheelTimerTask();
+            timewheel.schedule(timerNodes[i], i);
             treeSet.add(i);
         }
     }
 
     @Benchmark
     public void wheelTimer() {
-        timewheel.reschedule(wheelTimerNodes[delay], delay);
+        timewheel.schedule(timerNodes[delay], delay);
     }
 
-    //@Benchmark
+    @Benchmark
     public void treeSet() {
         treeSet.remove(integer);
         treeSet.add(integer);
+    }
+
+    private static class TestWheelTimerTask extends WheelTimerTask {
+
+        @Override
+        public void run(long deltaTicket) {
+
+        }
     }
 }
