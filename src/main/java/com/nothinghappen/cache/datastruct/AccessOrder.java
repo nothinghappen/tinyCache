@@ -10,7 +10,4 @@ public interface AccessOrder<T extends AccessOrder<T>> {
 
     void setPrev(T accessOrder);
 
-    // long getAccessTime();
-    //
-    // void setAccessTime(long accessTime);
 }

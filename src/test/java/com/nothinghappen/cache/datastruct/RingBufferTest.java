@@ -1,5 +1,6 @@
 package com.nothinghappen.cache.datastruct;
 
+import com.nothinghappen.cache.base.Awaits;
 import com.nothinghappen.cache.base.ConcurrentTest;
 import com.nothinghappen.cache.datastruct.RingBuffer;
 import org.junit.Assert;
@@ -50,9 +51,7 @@ public class RingBufferTest {
         Thread.sleep(3000);
         offerFlag.set(false);
         //drain buffer
-        while (ringBuffer.size() != 0) {
-            Thread.yield();
-        }
+        Awaits.await().until(() -> ringBuffer.size() == 0);
         pollFlag.set(false);
         Assert.assertEquals(offer.get(), poll.get());
     }

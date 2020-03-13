@@ -111,7 +111,7 @@ public class WheelTimerTest {
     }
 
     @Test
-    public void schedule_triple() {
+    public void schedule() {
         AtomicInteger count = new AtomicInteger();
         TestWheelTimerTask task = new TestWheelTimerTask(count::incrementAndGet);
         WheelTimer wheelTimer = new WheelTimer(2, 0);

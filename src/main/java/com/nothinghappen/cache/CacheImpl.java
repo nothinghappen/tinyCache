@@ -31,7 +31,7 @@ import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 class CacheImpl implements Cache {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(CacheImpl.class);
+    private final Logger LOGGER = LoggerFactory.getLogger(CacheImpl.class);
 
     final long MIN_DELAYED_NANO = NANOSECONDS.convert(5, TimeUnit.MILLISECONDS);
 
@@ -268,12 +268,6 @@ class CacheImpl implements Cache {
     }
 
     @RunIn("backend")
-    private void rescheduleInTimeWheel(CacheItem ci) {
-        timeWheel.schedule(ci,
-                timeWheelTicker.read() + timeWheelTicker.convert(ci.expireAfterAccess, NANOSECONDS));
-    }
-
-    @RunIn("backend")
     private void unScheduleInTimeWheel(CacheItem ci) {
         timeWheel.unschedule(ci);
     }
@@ -335,7 +329,7 @@ class CacheImpl implements Cache {
             if (currentExpireAfterAccess <= 0) {
                 unScheduleInTimeWheel(ci);
             } else {
-                rescheduleInTimeWheel(ci);
+                scheduleInTimeWheel(ci);
             }
         }
         listenerChain.onRefresh(ci.key);
@@ -473,7 +467,7 @@ class CacheImpl implements Cache {
 
         @Override
         @RunIn("backend")
-        public void run(long delta) {
+        public void run(long delay) {
             long currentExpireAfterAccessNanos = this.expiration.expireAfterAccess(NANOSECONDS);
             if (currentExpireAfterAccessNanos != this.expireAfterAccess) {
 
@@ -486,7 +480,7 @@ class CacheImpl implements Cache {
                         timeWheelTicker.convert(currentExpireAfterAccessNanos, NANOSECONDS);
                 long expireAfterAccessTicks = timeWheelTicker.convert(this.expireAfterAccess, NANOSECONDS);
                 long nowTicks = timeWheelTicker.read();
-                long rescheduleTicks = currentExpireAfterAccessTicks - expireAfterAccessTicks + delta;
+                long rescheduleTicks = currentExpireAfterAccessTicks - expireAfterAccessTicks + delay;
                 if (rescheduleTicks > 0) {
                     // still alive , according to new value of expireAfterAccess
                     timeWheel.schedule(this, nowTicks + rescheduleTicks);
@@ -497,7 +491,6 @@ class CacheImpl implements Cache {
             doRemove(this.key, RemovalCause.EXPIRE_AFTER_ACCESS);
         }
     }
-
 
     private class AccessLinkedList extends AccessList<CacheItem> {
 
@@ -525,6 +518,9 @@ class CacheImpl implements Cache {
 
         @Override
         public void remove(CacheItem node) {
+            if(isUnLinked(node)) {
+                return;
+            }
             unlink(node);
             node.setNext(null);
             node.setPrev(null);
@@ -536,7 +532,6 @@ class CacheImpl implements Cache {
         }
 
     }
-
 
     class BackendThread implements Executor, Runnable {
 
@@ -621,7 +616,7 @@ class CacheImpl implements Cache {
                 accessList.access(ci);
             }
             if (isExpireAfterAccess(ci)) {
-                rescheduleInTimeWheel(ci);
+                scheduleInTimeWheel(ci);
             }
         }
 
@@ -630,7 +625,7 @@ class CacheImpl implements Cache {
             int size = size();
             if (isEvict() && size > capacity) {
                 CacheItem victim = accessList.head().getPrev();
-                while (size > capacity && victim != null) {
+                while (size > capacity && victim != accessList.head()) {
                     CacheItem nextVictim = victim.getPrev();
                     doRemove(victim.key, RemovalCause.EVICT);
                     victim = nextVictim;
