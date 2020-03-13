@@ -16,6 +16,12 @@ public class MockUtils {
                     Executor executor) {
                 return CompletableFuture.completedFuture(supplier.get());
             }
+            @Mock
+            public CompletableFuture<Void> runAsync(Runnable runnable,
+                    Executor executor) {
+                runnable.run();
+                return CompletableFuture.completedFuture(null);
+            }
         };
     }
 }
