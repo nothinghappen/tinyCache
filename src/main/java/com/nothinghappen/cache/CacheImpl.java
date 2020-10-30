@@ -603,9 +603,10 @@ class CacheImpl implements Cache {
 
         @RunIn("backend")
         void drainBuffer() {
-            int count = 0;
+            long count = 0;
+            long capacity = readBuffer.capacity() > 0 ? readBuffer.capacity() : 512;
             CacheItem ci = null;
-            while ((ci = readBuffer.poll()) != null && count < readBuffer.capacity()) {
+            while ((ci = readBuffer.poll()) != null && count < capacity) {
                 consumeBuffer(ci);
                 count++;
             }
