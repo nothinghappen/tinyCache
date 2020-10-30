@@ -17,13 +17,11 @@ public class WheelTimer {
      * bucket_size = 2 ^ power
      */
     public WheelTimer(int power, long nowTicks) {
-        if (power < 0) {
-            power = 0;
-        }
-        if (power > 30) {
-            power = 30;
-        }
-        this.init(1 << power, nowTicks, null, 1);
+        this.init(1 << overflowFree(power), nowTicks, null, 1);
+    }
+
+    private int overflowFree(int power) {
+        return power < 0 ? 0 : power > 30 ? 30 : power;
     }
 
     private WheelTimer(int bucket_size, long nowTicks, WheelTimer root, long interval) {
@@ -107,12 +105,7 @@ public class WheelTimer {
         if (n <= 0) {
             n = 1;
         }
-        if (n > bucket_size) {
-            return null;
-        } else {
-            int index = advanceTo(this.currentIdx, (int) n);
-            return buckets[index];
-        }
+        return n > bucket_size ? null : buckets[advanceTo(this.currentIdx, (int) n)];
     }
 
     private WheelTimerTask findBucket(long deadline) {

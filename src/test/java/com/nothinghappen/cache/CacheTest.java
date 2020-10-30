@@ -784,20 +784,34 @@ public class CacheTest {
 
     @Test
     public void size() {
-        Cache cache = CacheBuilder.newBuilder().build();
+        Cache cache = CacheBuilder.newBuilder().setCapacity(3).build();
         Assert.assertEquals(0, cache.size());
+        // add
         cache.add("key", VALUE, Long.MAX_VALUE, TimeUnit.MILLISECONDS);
         Assert.assertEquals(1, cache.size());
+        // getOrAdd
         cache.getOrLoad("key2", (k,v) -> VALUE, Long.MAX_VALUE, TimeUnit.MILLISECONDS);
         Assert.assertEquals(2, cache.size());
+        // add duplicate key
         cache.add("key", "value2", Long.MAX_VALUE, TimeUnit.MILLISECONDS);
         Assert.assertEquals(2, cache.size());
         cache.add("key2", VALUE, Long.MAX_VALUE, TimeUnit.MILLISECONDS);
         Assert.assertEquals(2, cache.size());
+        // remove
         cache.remove("key2");
         Assert.assertEquals(1, cache.size());
         cache.remove("key");
         Assert.assertEquals(0, cache.size());
+
+        // expire
+        cache.add("key3", VALUE, 100, TimeUnit.MILLISECONDS);
+        Awaits.await().until(() -> cache.size() == 0);
+        // evict
+        cache.add("key1", VALUE, Long.MAX_VALUE, TimeUnit.MILLISECONDS);
+        cache.add("key2", VALUE, Long.MAX_VALUE, TimeUnit.MILLISECONDS);
+        cache.add("key3", VALUE, Long.MAX_VALUE, TimeUnit.MILLISECONDS);
+        cache.add("key4", VALUE, Long.MAX_VALUE, TimeUnit.MILLISECONDS);
+        Awaits.await().until(() -> cache.size() == 3);
     }
 
     /*------------------------------listener----------------------------------------------------------*/
